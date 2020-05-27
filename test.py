@@ -5,7 +5,9 @@ import click
 import logging
 import json
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)                #ne pas oublier logger level est a debug:
+
+
 
 PROCESS_METADATA = {
     'version': '0.1.0',
@@ -41,7 +43,7 @@ PROCESS_METADATA = {
         'maxOccurs': 1
     },
     {
-        'id': 'date1',
+        'id': 'date_end',
         'title': 'end date (yyyy-mm-dd)',
         'description' : 'final date of the graph',
         'input': {
@@ -56,7 +58,7 @@ PROCESS_METADATA = {
         'maxOccurs': 1
     },
     {
-        'id': 'date2',
+        'id': 'date_begin',
         'title': 'begin date (yyyy-mm-dd)',
         'description' : 'first date of the graph',
         'input': {
@@ -126,21 +128,20 @@ PROCESS_METADATA = {
 
 
 
-def searchT(es_object, index_name, date1, date2, layer):
+def query_es(es_object, index_name, date_end, date_begin, layer):
 
     """
     find documents that fit with search param
 
     es_object : ES server
     index_name : index name in ES server to look into
-    date1 : max forecast hour datetime value to match docs
-    date2 : min forecast hour datetime value to match docs
+    date_end : max forecast hour datetime value to match docs
+    date_begin : min forecast hour datetime value to match docs
     layer : layers to match docs
 
     return : json of the search result
 
     """
-  
    
     try:   
 
@@ -156,8 +157,8 @@ def searchT(es_object, index_name, date1, date2, layer):
                         {
                             'properties.forecast_hour_datetime':
                             {
-                                'lte': date1,
-                                'gte': date2
+                                'lte': date_end,
+                                'gte': date_begin
                             }
                         }
                     },
@@ -170,8 +171,10 @@ def searchT(es_object, index_name, date1, date2, layer):
         }
 
         res = es_object.search(index=index_name, body=s_object)
-    except:
-        print('impossible research')
+    
+    except Exception :
+        msg = 'invalid dates'
+        LOGGER.error(msg)
         res = None
 
     return res
@@ -179,10 +182,10 @@ def searchT(es_object, index_name, date1, date2, layer):
 
 
 
-def coord_2_pix_info(path,x,y):
+def xy_2_raster_data(path,x,y):
 
     """
-    convert coordinate to x, y raster value and
+    convert coordinate to x, y raster coordinate and
     return the x,y value of the raster
 
     path : where the grib raster file is located
@@ -197,14 +200,14 @@ def coord_2_pix_info(path,x,y):
         
         transform=grib.GetGeoTransform()
 
-        Xorg = transform[0]
-        Yorg=transform[3]
+        org_x = transform[0]
+        org_y = transform[3]
          
-        pixW = transform[1]
-        pixH = transform[5]
+        pix_w = transform[1]
+        pix_h = transform[5]
 
-        x = int((x - Xorg) / pixW)
-        y = int((y - Yorg) / pixH)
+        x = int((x - org_x) / pix_w)
+        y = int((y - org_y) / pix_h)
         
         try:
             band1 =grib.GetRasterBand(1).ReadAsArray()
@@ -213,10 +216,12 @@ def coord_2_pix_info(path,x,y):
 
         except:
             print('Invalid coordinates')
-            return 0
+           
         
-    except:
+    except :
         print('Open failed')
+
+    return 0
 
 
 
@@ -267,23 +272,23 @@ def get_values(res, x, y, cumul):
         for doc in res['hits']['hits']:
             file_path = doc['_source']['properties']['filepath']
             date = doc['_source']['properties']['forecast_hour_datetime']
-            val = coord_2_pix_info(file_path, x, y)
+            val = xy_2_raster_data(file_path, x, y)
             data['daily_values'].append(val)
             data['dates'].append(date)
 
     elif cumul == 24 :      #use half of the documents
 
-        date1 = res['hits']['hits'][-1]['_source']['properties']['forecast_hour_datetime']
-        date1, time1 = date1.split('T') 
+        date_ = res['hits']['hits'][-1]['_source']['properties']['forecast_hour_datetime']
+        date_, time_ = date_.split('T') 
 
         for doc in res['hits']['hits']:
 
             file_path = doc['_source']['properties']['filepath']
             date = doc['_source']['properties']['forecast_hour_datetime']
-            date2, time = date.split('T')  
+            tmp, time = date.split('T')  
 
-            if time == time1 :
-                val = coord_2_pix_info(file_path, x, y)
+            if time == time_ :
+                val = xy_2_raster_data(file_path, x, y)
                 data['daily_values'].append(val)
                 data['dates'].append(date)
      
@@ -343,14 +348,14 @@ def get_graph_arrays(values, time_step):
 
 
 
-def get_rpda_info(layer, date1, date2, x, y, time_step):
+def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
     """
     output information to produce graph about rain accumulation for 
     given location and number of days
 
     layer : layer to search the info in
-    date1 : end date
-    date2 : begin date
+    date_end : end date
+    date_begin : begin date
     x : x coordinate
     y : y coordinate
     time_step : time step for the graph in hours
@@ -361,19 +366,21 @@ def get_rpda_info(layer, date1, date2, x, y, time_step):
     es = Elasticsearch(['localhost:9200'])
     index = 'geomet-data-registry-tileindex'
 
-    if len(date1)!=20 :
-        date1 = date1 + 'T12:00:00Z'    #if no hour specified
+    if len(date_end)!=20 :
+        date_end = date_end + 'T12:00:00Z'    #if no hour specified
 
-    if len(date2)!=20 :
-        date2 = date2 + 'T12:00:00Z'  
+    if len(date_begin)!=20 :
+        date_begin = date_begin + 'T12:00:00Z'  
 
    
     if es is not None:
-        res = searchT(es, index, date1, date2, layer)
-        cumul = _24_or_6(res['hits']['hits'][0]['_source']['properties']['filepath'])
+        res = query_es(es, index, date_end, date_begin, layer)
         
         if res is not None:
             if res['hits']['total']['value'] > 0 :
+
+                cumul = _24_or_6(res['hits']['hits'][0]['_source']['properties']['filepath'])
+
                 if (time_step%cumul) == 0:
                    
                     values = get_values(res, x, y, cumul)
@@ -381,13 +388,13 @@ def get_rpda_info(layer, date1, date2, x, y, time_step):
                     return data
 
                 else :
-                    print('invalid time step')
+                    LOGGER.error('invalid time step')
             else:
-                print('no data found')
+                LOGGER.error('no data found')
         else:     
-            print('failed to extract data')  
+            LOGGER.error('failed to extract data')  
     else:
-        print('not connected')
+        LOGGER.error('not connected')
 
     return None
 
@@ -399,15 +406,15 @@ def test_execute():
 @click.command('test')
 @click.pass_context
 @click.option('--layer', help='layer name', type=str)
-@click.option('--date1', help='end date of the graph', type=str)
-@click.option('--date2', help='end date of the graph', type=str)
+@click.option('--date_end', help='end date of the graph', type=str)
+@click.option('--date_begin', help='end date of the graph', type=str)
 @click.option('--x', help='x coordinate', type=float)
 @click.option('--y', help='y coordinate', type=float)
 @click.option('--time_step', help='graph time step', type=int, default=0)
 
 
-def cli(ctx, layer, date1, date2, x, y, time_step):
-    output = get_rpda_info(layer, date1, date2, x, y, time_step)
+def cli(ctx, layer, date_end, date_begin, x, y, time_step):
+    output = get_rpda_info(layer, date_end, date_begin, x, y, time_step)
     click.echo(json.dumps(output, ensure_ascii=False))
     
 
@@ -430,12 +437,12 @@ try:
 
         def execute(self, data):
             layer = data['layer']
-            date1 = data['date1']
-            date2 = data['date2']
+            date_end = data['date_end']
+            date_begin = data['date_begin']
             x = data['x']
             y = data['y']
             time_step = data['time_step']
-            dict_ = get_rpda_info(layer, date1, date2, x, y, time_step)
+            dict_ = get_rpda_info(layer, date_end, date_begin, x, y, time_step)
             return dict_
 
         def __repr__(self):
