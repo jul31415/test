@@ -1,4 +1,33 @@
-from elasticsearch import Elasticsearch
+# =================================================================
+#
+# Author: Julien Roy-Sabourin <julien.roy-sabourin.eccc@gccollaboration.ca>
+#
+# Copyright (c) 2020 Julien Roy-Sabourin
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation
+# files (the "Software"), to deal in the Software without
+# restriction, including without limitation the rights to use,
+# copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following
+# conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+# OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+# OTHER DEALINGS IN THE SOFTWARE.
+#
+# =================================================================
+
+from elasticsearch import Elasticsearch, exceptions
 from datetime import datetime, timedelta 
 from osgeo import gdal
 import click
@@ -127,6 +156,27 @@ PROCESS_METADATA = {
 }
 
 
+def valid_dates(date):
+    """
+    validate that date is in the correct format (raise ValueError)
+    and add deafaut hour(12Z) if not specified
+
+    date : date to validate
+
+    retunr validated date
+    """
+
+
+    if len(date)==10 :
+        dates_test = datetime.strptime(date, '%Y-%m-%d')
+        date = date + 'T12:00:00Z'    
+
+    else:
+        date_test = datetime.strptime(date, '%Y-%m-%dT%H:%M:%SZ')
+
+    return date
+
+
 
 def query_es(es_object, index_name, date_end, date_begin, layer):
 
@@ -143,39 +193,42 @@ def query_es(es_object, index_name, date_end, date_begin, layer):
 
     """
    
-    try:   
+   
 
-        s_object =  {
-            'size': 100,              #result limit     
-            'query':
+    s_object =  {
+        'size': 100,              #result limit     
+        'query':
+        {
+            'bool':
             {
-                'bool':
+                'must': 
                 {
-                    'must': 
+                    'range':
                     {
-                        'range':
+                        'properties.forecast_hour_datetime':
                         {
-                            'properties.forecast_hour_datetime':
-                            {
-                                'lte': date_end,
-                                'gte': date_begin
-                            }
+                            'lte': date_end,
+                            'gte': date_begin
                         }
-                    },
-                    'filter': 
-                    {
-                        'term': {"properties.layer.raw": layer}
                     }
-                }   
-            }     
-        }
+                },
+                'filter': 
+                {
+                    'term': {"properties.layer.raw": layer}
+                }
+            }   
+        }     
+    }
 
+
+    try :
         res = es_object.search(index=index_name, body=s_object)
-    
-    except Exception :
-        msg = 'invalid dates'
+
+    except exceptions.ElasticsearchException as error:
+        msg = 'ES search error: {}' .format(error)
         LOGGER.error(msg)
-        res = None
+        return None
+   
 
     return res
 
@@ -212,14 +265,15 @@ def xy_2_raster_data(path,x,y):
         try:
             band1 =grib.GetRasterBand(1).ReadAsArray()
             return band1[y][x]
-            
 
-        except:
-            print('Invalid coordinates')
+        except IndexError as error:
+            msg = 'Invalid coordinates : {}' .format(error)
+            LOGGER.error(msg)
            
         
-    except :
-        print('Open failed')
+    except RuntimeError as error:
+        msg = 'can\'t open file : {}' .format(error)
+        LOGGER.error(MSG)
 
     return 0
 
@@ -366,11 +420,15 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
     es = Elasticsearch(['localhost:9200'])
     index = 'geomet-data-registry-tileindex'
 
-    if len(date_end)!=20 :
-        date_end = date_end + 'T12:00:00Z'    #if no hour specified
+    try:
 
-    if len(date_begin)!=20 :
-        date_begin = date_begin + 'T12:00:00Z'  
+        date_begin = valid_dates(date_begin)
+        date_end = valid_dates(date_end)
+
+    except ValueError as error:
+        msg = 'invalid date : {}' .format(error)
+        LOGGER.error(msg) 
+        return None
 
    
     if es is not None:
@@ -450,4 +508,5 @@ try:
 
 except (ImportError, RuntimeError):
     pass
+
 
