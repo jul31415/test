@@ -27,16 +27,18 @@
 #
 # =================================================================
 
-from elasticsearch import Elasticsearch, exceptions
-from datetime import datetime, timedelta
-from osgeo import gdal
 import click
-import logging
 import json
+import logging
+
+from datetime import datetime, timedelta
+from elasticsearch import Elasticsearch, exceptions
+from osgeo import gdal
 
 LOGGER = logging.getLogger(__name__)
 # ne pas oublier logger level est a debug:
 
+DATE_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 
 PROCESS_METADATA = {
     'version': '0.1.0',
@@ -168,7 +170,7 @@ def valid_dates(date):
         date = date + 'T12:00:00Z'
 
     else:
-        datetime.strptime(date, '%Y-%m-%dT%H:%M:%SZ')
+        datetime.strptime(date, DATE_FORMAT)
 
     return date
 
@@ -189,7 +191,7 @@ def query_es(es_object, index_name, date_end, date_begin, layer):
     """
 
     s_object = {
-        'size': 100,              # result limit
+        'size': 122,              # result limit 1 month
         'query':
         {
             'bool':
@@ -221,7 +223,11 @@ def query_es(es_object, index_name, date_end, date_begin, layer):
         LOGGER.error(msg)
         return None
 
-    return res
+    res_sorted = sorted(res['hits']['hits'],
+                        key=lambda i: i['_source']['properties']
+                        ['forecast_hour_datetime'])
+
+    return res_sorted, res['hits']['total']['value']
 
 
 def xy_2_raster_data(path, x, y):
@@ -275,14 +281,13 @@ def _24_or_6(file):
     return : true if 24h, false if 6h
     """
 
-    nb = file.rfind('/')
+    path = file.split('/')
 
-    if file[(nb+15):(nb+18)] == '024':
+    if path[-2] == '24':
         return 24
-    elif file[(nb+15):(nb+18)] == '006':
+    elif path[-2] == '06':
         return 6
     else:
-        print('layer error')
         return 0
 
 
@@ -301,25 +306,24 @@ def get_values(res, x, y, cumul):
     """
 
     data = {
-        'daily_values': [],
+        'values': [],
         'dates': []
     }
 
     if cumul == 6:
-        for doc in res['hits']['hits']:
+        for doc in res:
             file_path = doc['_source']['properties']['filepath']
             date = doc['_source']['properties']['forecast_hour_datetime']
             val = xy_2_raster_data(file_path, x, y)
-            data['daily_values'].append(val)
+            data['values'].append(val)
             data['dates'].append(date)
 
     elif cumul == 24:      # use half of the documents
 
-        date_ = res['hits']['hits'][-1]['_source']['properties']
-        ['forecast_hour_datetime']
+        date_ = res[-1]['_source']['properties']['forecast_hour_datetime']
         date_, time_ = date_.split('T')
 
-        for doc in res['hits']['hits']:
+        for doc in res:
 
             file_path = doc['_source']['properties']['filepath']
             date = doc['_source']['properties']['forecast_hour_datetime']
@@ -327,7 +331,7 @@ def get_values(res, x, y, cumul):
 
             if time == time_:
                 val = xy_2_raster_data(file_path, x, y)
-                data['daily_values'].append(val)
+                data['values'].append(val)
                 data['dates'].append(date)
 
     return data
@@ -341,33 +345,33 @@ def get_graph_arrays(values, time_step):
     time_step : time step for the graph in hours
 
     return : data : json that contains 3 arrays :
-                        daly_values : rdpa value for 24h
+                        values : rdpa value for 24h
                         total_value : total rdpa value since the begin date
                         date : date of rdpa values
     """
 
     data = {
-        'daily_values': [],
+        'values': [],
         'total_values': [],
         'dates': []
     }
 
     date_c = values['dates'][0]
-    date_c = datetime.strptime(date_c, '%Y-%m-%dT%H:%M:%SZ')
+    date_c = datetime.strptime(date_c, DATE_FORMAT)
     total = 0
     cmpt = -1
 
     for i in range(len(values['dates'])):
-        val = values['daily_values'][i]
+        val = values['values'][i]
         date = values['dates'][i]
-        date = datetime.strptime(date, '%Y-%m-%dT%H:%M:%SZ')
+        date = datetime.strptime(date, DATE_FORMAT)
         total += val
 
         if date != date_c:
-            data['daily_values'][cmpt] += val
+            data['values'][cmpt] += val
             data['total_values'][cmpt] += val
         else:
-            data['daily_values'].append(val)
+            data['values'].append(val)
             data['total_values'].append(total)
             data['dates'].append(date)
             date_c = date + timedelta(hours=time_step)
@@ -376,12 +380,12 @@ def get_graph_arrays(values, time_step):
     if time_step >= 24 and (time_step % 24) == 0:
         for i in range(len(data['dates'])):
             date, time = datetime.strftime(data['dates'][i],
-                                           '%Y-%m-%dT%H:%M:%SZ').split('T')
+                                           DATE_FORMAT).split('T')
             data['dates'][i] = date
     else:
         for i in range(len(data['dates'])):
             data['dates'][i] = datetime.strftime(data['dates'][i],
-                                                 '%Y-%m-%dT%H:%M:%SZ')
+                                                 DATE_FORMAT)
     return data
 
 
@@ -414,22 +418,21 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
         return None
 
     if es is not None:
-        res = query_es(es, index, date_end, date_begin, layer)
+        res, nb_res = query_es(es, index, date_end, date_begin, layer)
 
         if res is not None:
-            if res['hits']['total']['value'] > 0:
-
-                cumul = _24_or_6(res['hits']['hits'][0]
-                                 ['_source']['properties']['filepath'])
-
-                if (time_step % cumul) == 0:
-
-                    values = get_values(res, x, y, cumul)
-                    data = get_graph_arrays(values, time_step)
-                    return data
-
-                else:
-                    LOGGER.error('invalid time step')
+            if nb_res > 0:
+                cumul = _24_or_6(res[0]['_source']['properties']['filepath'])
+                try:
+                    if (time_step % cumul) == 0:
+                        values = get_values(res, x, y, cumul)
+                        data = get_graph_arrays(values, time_step)
+                        return data
+                    else:
+                        LOGGER.error('invalid time step')
+                except ZeroDivisionError as error:
+                    msg = 'layer error :  {}' .format(error)
+                    LOGGER.error(msg)
             else:
                 LOGGER.error('no data found')
         else:
