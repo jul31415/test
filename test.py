@@ -28,14 +28,14 @@
 # =================================================================
 
 from elasticsearch import Elasticsearch, exceptions
-from datetime import datetime, timedelta 
+from datetime import datetime, timedelta
 from osgeo import gdal
 import click
 import logging
 import json
 
-LOGGER = logging.getLogger(__name__)                #ne pas oublier logger level est a debug:
-
+LOGGER = logging.getLogger(__name__)
+# ne pas oublier logger level est a debug:
 
 
 PROCESS_METADATA = {
@@ -70,11 +70,10 @@ PROCESS_METADATA = {
         },
         'minOccurs': 1,
         'maxOccurs': 1
-    },
-    {
+    }, {
         'id': 'date_end',
         'title': 'end date (yyyy-mm-dd)',
-        'description' : 'final date of the graph',
+        'description': 'final date of the graph',
         'input': {
             'literalDataDomain': {
                 'dataType': 'string',
@@ -85,11 +84,10 @@ PROCESS_METADATA = {
         },
         'minOccurs': 1,
         'maxOccurs': 1
-    },
-    {
+    }, {
         'id': 'date_begin',
         'title': 'begin date (yyyy-mm-dd)',
-        'description' : 'first date of the graph',
+        'description': 'first date of the graph',
         'input': {
             'literalDataDomain': {
                 'dataType': 'string',
@@ -100,10 +98,10 @@ PROCESS_METADATA = {
         },
         'minOccurs': 1,
         'maxOccurs': 1
-    },
-    {
+    }, {
         'id': 'x',
         'title': 'x coordinate',
+        'description': 'Polar Stereographic projection',
         'input': {
             'literalDataDomain': {
                 'dataType': 'float',
@@ -114,10 +112,10 @@ PROCESS_METADATA = {
         },
         'minOccurs': 1,
         'maxOccurs': 1
-    },
-    {
+    }, {
         'id': 'y',
         'title': 'y coordinate',
+        'description': 'Polar Stereographic projection',
         'input': {
             'literalDataDomain': {
                 'dataType': 'float',
@@ -128,8 +126,7 @@ PROCESS_METADATA = {
         },
         'minOccurs': 1,
         'maxOccurs': 1
-    },
-    {
+    }, {
         'id': 'time_step',
         'title': 'time step',
         'description': 'time step for the graph in hours',
@@ -166,16 +163,14 @@ def valid_dates(date):
     retunr validated date
     """
 
-
-    if len(date)==10 :
-        dates_test = datetime.strptime(date, '%Y-%m-%d')
-        date = date + 'T12:00:00Z'    
+    if len(date) == 10:
+        datetime.strptime(date, '%Y-%m-%d')
+        date = date + 'T12:00:00Z'
 
     else:
-        date_test = datetime.strptime(date, '%Y-%m-%dT%H:%M:%SZ')
+        datetime.strptime(date, '%Y-%m-%dT%H:%M:%SZ')
 
     return date
-
 
 
 def query_es(es_object, index_name, date_end, date_begin, layer):
@@ -192,16 +187,14 @@ def query_es(es_object, index_name, date_end, date_begin, layer):
     return : json of the search result
 
     """
-   
-   
 
-    s_object =  {
-        'size': 100,              #result limit     
+    s_object = {
+        'size': 100,              # result limit
         'query':
         {
             'bool':
             {
-                'must': 
+                'must':
                 {
                     'range':
                     {
@@ -212,30 +205,26 @@ def query_es(es_object, index_name, date_end, date_begin, layer):
                         }
                     }
                 },
-                'filter': 
+                'filter':
                 {
                     'term': {"properties.layer.raw": layer}
                 }
-            }   
-        }     
+            }
+        }
     }
 
-
-    try :
+    try:
         res = es_object.search(index=index_name, body=s_object)
 
     except exceptions.ElasticsearchException as error:
         msg = 'ES search error: {}' .format(error)
         LOGGER.error(msg)
         return None
-   
 
     return res
 
 
-
-
-def xy_2_raster_data(path,x,y):
+def xy_2_raster_data(path, x, y):
 
     """
     convert coordinate to x, y raster coordinate and
@@ -250,35 +239,31 @@ def xy_2_raster_data(path,x,y):
 
     try:
         grib = gdal.Open(path)
-        
-        transform=grib.GetGeoTransform()
+
+        transform = grib.GetGeoTransform()
 
         org_x = transform[0]
         org_y = transform[3]
-         
+
         pix_w = transform[1]
         pix_h = transform[5]
 
         x = int((x - org_x) / pix_w)
         y = int((y - org_y) / pix_h)
-        
+
         try:
-            band1 =grib.GetRasterBand(1).ReadAsArray()
+            band1 = grib.GetRasterBand(1).ReadAsArray()
             return band1[y][x]
 
         except IndexError as error:
             msg = 'Invalid coordinates : {}' .format(error)
             LOGGER.error(msg)
-           
-        
+
     except RuntimeError as error:
         msg = 'can\'t open file : {}' .format(error)
-        LOGGER.error(MSG)
+        LOGGER.error(msg)
 
     return 0
-
-
-
 
 
 def _24_or_6(file):
@@ -292,15 +277,13 @@ def _24_or_6(file):
 
     nb = file.rfind('/')
 
-    if file[(nb+15):(nb+18)]=='024' :
+    if file[(nb+15):(nb+18)] == '024':
         return 24
-    elif file[(nb+15):(nb+18)]=='006' :
+    elif file[(nb+15):(nb+18)] == '006':
         return 6
     else:
         print('layer error')
         return 0
-
-
 
 
 def get_values(res, x, y, cumul):
@@ -316,10 +299,10 @@ def get_values(res, x, y, cumul):
     return : (x, y) raster values and dates
 
     """
-         
+
     data = {
-    'daily_values': [],
-    'dates': []
+        'daily_values': [],
+        'dates': []
     }
 
     if cumul == 6:
@@ -330,22 +313,23 @@ def get_values(res, x, y, cumul):
             data['daily_values'].append(val)
             data['dates'].append(date)
 
-    elif cumul == 24 :      #use half of the documents
+    elif cumul == 24:      # use half of the documents
 
-        date_ = res['hits']['hits'][-1]['_source']['properties']['forecast_hour_datetime']
-        date_, time_ = date_.split('T') 
+        date_ = res['hits']['hits'][-1]['_source']['properties']
+        ['forecast_hour_datetime']
+        date_, time_ = date_.split('T')
 
         for doc in res['hits']['hits']:
 
             file_path = doc['_source']['properties']['filepath']
             date = doc['_source']['properties']['forecast_hour_datetime']
-            tmp, time = date.split('T')  
+            tmp, time = date.split('T')
 
-            if time == time_ :
+            if time == time_:
                 val = xy_2_raster_data(file_path, x, y)
                 data['daily_values'].append(val)
                 data['dates'].append(date)
-     
+
     return data
 
 
@@ -361,7 +345,7 @@ def get_graph_arrays(values, time_step):
                         total_value : total rdpa value since the begin date
                         date : date of rdpa values
     """
-    
+
     data = {
         'daily_values': [],
         'total_values': [],
@@ -382,30 +366,29 @@ def get_graph_arrays(values, time_step):
         if date != date_c:
             data['daily_values'][cmpt] += val
             data['total_values'][cmpt] += val
-        else :
+        else:
             data['daily_values'].append(val)
             data['total_values'].append(total)
             data['dates'].append(date)
-            date_c = date + timedelta(hours = time_step)  
-            cmpt +=1
+            date_c = date + timedelta(hours=time_step)
+            cmpt += 1
 
-    if time_step >= 24 and (time_step%24) == 0:                
-       for i in range(len(data['dates'])):
-            date, time = datetime.strftime(data['dates'][i], '%Y-%m-%dT%H:%M:%SZ').split('T')
-            data['dates'][i] = date
-    else :
+    if time_step >= 24 and (time_step % 24) == 0:
         for i in range(len(data['dates'])):
-            data['dates'][i] = datetime.strftime(data['dates'][i], '%Y-%m-%dT%H:%M:%SZ')
-            
-
+            date, time = datetime.strftime(data['dates'][i],
+                                           '%Y-%m-%dT%H:%M:%SZ').split('T')
+            data['dates'][i] = date
+    else:
+        for i in range(len(data['dates'])):
+            data['dates'][i] = datetime.strftime(data['dates'][i],
+                                                 '%Y-%m-%dT%H:%M:%SZ')
     return data
-
 
 
 def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
     """
-    output information to produce graph about rain accumulation for 
-    given location and number of days
+    output information to produce graph about rain
+    accumulation for given location and number of days
 
     layer : layer to search the info in
     date_end : end date
@@ -414,7 +397,7 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
     y : y coordinate
     time_step : time step for the graph in hours
 
-    return : data 
+    return : data
     """
 
     es = Elasticsearch(['localhost:9200'])
@@ -427,30 +410,30 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
 
     except ValueError as error:
         msg = 'invalid date : {}' .format(error)
-        LOGGER.error(msg) 
+        LOGGER.error(msg)
         return None
 
-   
     if es is not None:
         res = query_es(es, index, date_end, date_begin, layer)
-        
+
         if res is not None:
-            if res['hits']['total']['value'] > 0 :
+            if res['hits']['total']['value'] > 0:
 
-                cumul = _24_or_6(res['hits']['hits'][0]['_source']['properties']['filepath'])
+                cumul = _24_or_6(res['hits']['hits'][0]
+                                 ['_source']['properties']['filepath'])
 
-                if (time_step%cumul) == 0:
-                   
+                if (time_step % cumul) == 0:
+
                     values = get_values(res, x, y, cumul)
                     data = get_graph_arrays(values, time_step)
                     return data
 
-                else :
+                else:
                     LOGGER.error('invalid time step')
             else:
                 LOGGER.error('no data found')
-        else:     
-            LOGGER.error('failed to extract data')  
+        else:
+            LOGGER.error('failed to extract data')
     else:
         LOGGER.error('not connected')
 
@@ -461,6 +444,7 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
 def test_execute():
     pass
 
+
 @click.command('test')
 @click.pass_context
 @click.option('--layer', help='layer name', type=str)
@@ -469,12 +453,10 @@ def test_execute():
 @click.option('--x', help='x coordinate', type=float)
 @click.option('--y', help='y coordinate', type=float)
 @click.option('--time_step', help='graph time step', type=int, default=0)
-
-
 def cli(ctx, layer, date_end, date_begin, x, y, time_step):
     output = get_rpda_info(layer, date_end, date_begin, x, y, time_step)
     click.echo(json.dumps(output, ensure_ascii=False))
-    
+
 
 test_execute.add_command(cli)
 
@@ -500,13 +482,19 @@ try:
             x = data['x']
             y = data['y']
             time_step = data['time_step']
-            dict_ = get_rpda_info(layer, date_end, date_begin, x, y, time_step)
-            return dict_
+
+            try:
+                dict = get_rpda_info(layer, date_end, date_begin, x, y,
+                                     time_step)
+            except ValueError as error:
+                msg = 'Process execution error: {}'.format(error)
+                LOGGER.error(msg)
+                raise ProcessorExecuteError(msg)
+
+            return dict
 
         def __repr__(self):
             return '<TestProcessor> {}'.format(self.name)
 
 except (ImportError, RuntimeError):
     pass
-
-
