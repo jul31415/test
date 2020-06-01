@@ -33,7 +33,8 @@ import logging
 
 from datetime import datetime, timedelta
 from elasticsearch import Elasticsearch, exceptions
-from osgeo import gdal
+from osgeo import gdal, osr
+from pyproj import Proj, transform
 
 LOGGER = logging.getLogger(__name__)
 # ne pas oublier logger level est a debug:
@@ -103,7 +104,7 @@ PROCESS_METADATA = {
     }, {
         'id': 'x',
         'title': 'x coordinate',
-        'description': 'Polar Stereographic projection',
+        'description': 'longitude',
         'input': {
             'literalDataDomain': {
                 'dataType': 'float',
@@ -117,7 +118,7 @@ PROCESS_METADATA = {
     }, {
         'id': 'y',
         'title': 'y coordinate',
-        'description': 'Polar Stereographic projection',
+        'description': 'latitude',
         'input': {
             'literalDataDomain': {
                 'dataType': 'float',
@@ -389,6 +390,27 @@ def get_graph_arrays(values, time_step):
     return data
 
 
+def transform_coord(file, x, y):
+    """
+    transform a lat long coordinate into the projection of the given file
+
+    file : file to extract th projection from
+    x : x coordinate (long)
+    y : y coordinate (lat)
+
+    return : _x _y : coordinata in transformed projection
+    """
+
+    ds = gdal.Open(file)
+
+    srs = osr.SpatialReference()
+    srs.ImportFromWkt(ds.GetProjection())
+    inProj = Proj(init='epsg:4326')
+    outProj = Proj(srs.ExportToProj4())
+    _x, _y = transform(inProj, outProj, x, y)
+    return _x, _y
+
+
 def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
     """
     output information to produce graph about rain
@@ -422,12 +444,27 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
 
         if res is not None:
             if nb_res > 0:
-                cumul = _24_or_6(res[0]['_source']['properties']['filepath'])
+                file1 = res[0]['_source']['properties']['filepath']
+                cumul = _24_or_6(file1)
                 try:
                     if (time_step % cumul) == 0:
-                        values = get_values(res, x, y, cumul)
+                        _x, _y = transform_coord(file1, x, y)
+                        values = get_values(res, _x, _y, cumul)
                         data = get_graph_arrays(values, time_step)
-                        return data
+
+                        output = {
+                            'type": "Feature',
+                            'geometry':{
+                                'type': 'Point',
+                                'coordinates': [x, y]
+                            },
+                            'properties': {
+                            }
+                        }
+
+                        output['properties'] = data
+
+                        return output
                     else:
                         LOGGER.error('invalid time step')
                 except ZeroDivisionError as error:
