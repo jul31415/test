@@ -30,10 +30,13 @@
 import click
 import json
 import logging
+import matplotlib.pyplot as plt
+
 
 from datetime import datetime, timedelta
 from elasticsearch import Elasticsearch, exceptions
 from osgeo import gdal, osr
+from io import BytesIO
 from pyproj import Proj, transform
 
 LOGGER = logging.getLogger(__name__)
@@ -143,6 +146,20 @@ PROCESS_METADATA = {
         },
         'minOccurs': 1,
         'maxOccurs': 1
+    }, {
+        'id': 'format',
+        'title': 'output format',
+        'description': 'GeoJSON or PNG',
+        'input': {
+            'literalDataDomain': {
+                'dataType': 'string',
+                'valueDefinition': {
+                    'anyValue': True
+                }
+            }
+        },
+        'minOccurs': 1,
+        'maxOccurs': 1
     }],
     'outputs': [{
         'id': 'test-response',
@@ -150,6 +167,8 @@ PROCESS_METADATA = {
         'output': {
             'formats': [{
                 'mimeType': 'application/json'
+            }, {
+                'mineType': 'image/png'
             }]
         }
     }]
@@ -192,7 +211,7 @@ def query_es(es_object, index_name, date_end, date_begin, layer):
     """
 
     s_object = {
-        'size': 122,              # result limit 1 month
+        'size': 124,              # result limit 1 month
         'query':
         {
             'bool':
@@ -386,7 +405,7 @@ def get_graph_arrays(values, time_step):
     else:
         for i in range(len(data['dates'])):
             data['dates'][i] = datetime.strftime(data['dates'][i],
-                                                 DATE_FORMAT)
+                                                 '%Y-%m-%d %H:%M')
     return data
 
 
@@ -411,7 +430,110 @@ def transform_coord(file, x, y):
     return _x, _y
 
 
-def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
+def geo_json(data, x, y):
+"""
+return the process output in GeoJSON format
+
+data: JSON of graph data
+X : x corrdinate
+y : y coordinate
+
+return : output : GeoJSON of graph data
+"""
+
+    output = {
+        'type': 'Feature',
+        'geometry': {
+            'type': 'Point',
+            'coordinates': [x, y]
+        },
+        'properties': {
+        }
+    }
+
+    output['properties'] = data
+    return output
+
+
+def png(data, coord_x, coord_y, time_step):
+    """
+    produce a graph
+
+    data : graph data
+    coord_x : x coordinate
+    coord_y : y coordinate
+    time_step : time step for graph
+
+    return : output : graph in PNG in bytes
+    """
+
+    size = len(data['dates'])
+    x_size = size/3.7
+    if x_size < 8:
+        x_size = 8
+    elif x_size > 18:
+        x_size = 18
+
+    params = {'legend.fontsize': '14',
+              'figure.figsize': (x_size, 8.2),
+              'axes.labelsize': '14',
+              'axes.titlesize': '16',
+              'xtick.labelsize': '12',
+              'ytick.labelsize': '12'}
+    plt.rcParams.update(params)
+
+    if(coord_y >= 0):
+        coord = '(' + str(round(coord_y, 2)) + 'N '
+    else:
+        coord = '(' + str(round(-coord_y, 2)) + 'S '
+    if(coord_x >= 0):
+        coord = coord + str(round(coord_x, 2)) + 'E)'
+    else:
+        coord = coord + str(round(-coord_x, 2)) + 'W)'
+
+    x = list(range(1, len(data['dates'])+1))
+    y = data['values']
+    y2 = data['total_values']
+
+    fig, ax = plt.subplots()
+    plt.bar(x, y, align='edge', width=-0.98)
+    plt.title('Daily Total Precipitation (bars), Cummulative (line)\n' + coord)
+    ax.set_ylabel('mm per day / par jour', color='b')
+    plt.grid(True, which='both', alpha=0.5, linestyle='-')
+
+    ax2 = plt.twinx()
+    ax2.plot(x, y2, color='k')
+    ax2.set_ylabel('mm cummulative / cumulatif')
+    ax2.set_ylim(0, (max(y2) * 1.1))
+
+    label = []
+    spacing = int(round((size/124)*4))
+    if spacing == 0:
+        spacing = 1
+    cmpt = spacing
+    if time_step == 6 and spacing == 4:
+        for i in range(len(data['dates'])):
+            date, time = data['dates'][i].split(' ')
+            data['dates'][i] = date
+
+    for date in data['dates']:
+        if cmpt % spacing == 0:
+            label.append(date)
+        else:
+            label.append('')
+        cmpt += 1
+
+    ax.xaxis.set_ticks(list(range(1, len(data['dates'])+1)))
+    ax.xaxis.set_ticklabels(label, rotation=90, ha='center')
+    ax.margins(x=0)
+    plt.subplots_adjust(bottom=0.2)
+
+    b = BytesIO()
+    plt.savefig(b, bbox_inches='tight')
+    return b
+
+
+def get_rpda_info(layer, date_end, date_begin, x, y, time_step, format_):
     """
     output information to produce graph about rain
     accumulation for given location and number of days
@@ -452,17 +574,10 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step):
                         values = get_values(res, _x, _y, cumul)
                         data = get_graph_arrays(values, time_step)
 
-                        output = {
-                            'type": "Feature',
-                            'geometry':{
-                                'type': 'Point',
-                                'coordinates': [x, y]
-                            },
-                            'properties': {
-                            }
-                        }
-
-                        output['properties'] = data
+                        if format_ == 'GeoJSON':
+                            output = geo_json(data, x, y)
+                        else:
+                            output = png(data, x, y, time_step)
 
                         return output
                     else:
@@ -493,12 +608,19 @@ def test_execute():
 @click.option('--x', help='x coordinate', type=float)
 @click.option('--y', help='y coordinate', type=float)
 @click.option('--time_step', help='graph time step', type=int, default=0)
-def cli(ctx, layer, date_end, date_begin, x, y, time_step):
-    output = get_rpda_info(layer, date_end, date_begin, x, y, time_step)
-    click.echo(json.dumps(output, ensure_ascii=False))
+@click.option('--format', 'format_', type=click.Choice(['GeoJSON', 'PNG']),
+              default='GeoJSON', help='output format')
+def cli(ctx, layer, date_end, date_begin, x, y, time_step, format_):
+    output = get_rpda_info(layer, date_end, date_begin, x, y, time_step,
+                           format_)
+    if format_ == 'PNG':
+        click.echo(output.getvalue())
+    else:
+        click.echo(json.dumps(output, ensure_ascii=False))
 
 
 test_execute.add_command(cli)
+
 
 try:
     from pygeoapi.process.base import BaseProcessor, ProcessorExecuteError
@@ -522,16 +644,25 @@ try:
             x = data['x']
             y = data['y']
             time_step = data['time_step']
+            format_ = data['format']
+
+            if format_ != 'GeoJSON' and format_ != 'PNG':
+                msg = 'Invalid format'
+                LOGGER.error(msg)
+                raise ValueError(msg)
 
             try:
-                dict = get_rpda_info(layer, date_end, date_begin, x, y,
-                                     time_step)
+                output = get_rpda_info(layer, date_end, date_begin, x, y,
+                                       time_step, format_)
             except ValueError as error:
                 msg = 'Process execution error: {}'.format(error)
                 LOGGER.error(msg)
                 raise ProcessorExecuteError(msg)
 
-            return dict
+            if format_ == 'PNG':
+                return output.getvalue()
+            else:
+                return output
 
         def __repr__(self):
             return '<TestProcessor> {}'.format(self.name)
