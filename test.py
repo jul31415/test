@@ -31,12 +31,11 @@ import click
 import json
 import logging
 import matplotlib.pyplot as plt
-
+import io
 
 from datetime import datetime, timedelta
 from elasticsearch import Elasticsearch, exceptions
 from osgeo import gdal, osr
-from io import BytesIO
 from pyproj import Proj, transform
 
 LOGGER = logging.getLogger(__name__)
@@ -48,7 +47,7 @@ PROCESS_METADATA = {
     'version': '0.1.0',
     'id': 'test',
     'title': 'Test process',
-    'description': 'produce data for rdpa graph',
+    'description': 'produce rdpa graph',
     'keywords': ['rdpa'],
     'links': [{
         'type': 'text/html',
@@ -166,12 +165,49 @@ PROCESS_METADATA = {
         'title': 'output test',
         'output': {
             'formats': [{
-                'mimeType': 'application/json'
-            }, {
                 'mineType': 'image/png'
+            }, {
+                'mineType': 'application/json'
             }]
         }
-    }]
+    }],
+    'example': {
+        'inputs': [{
+                "id": "layer",
+                "value": "RDPA.24P_PR",
+                'type': 'text/plain'
+            },
+            {
+                "id": "date_end",
+                "value": "2020-05-15",
+                'type': 'text/plain'
+            },
+            {
+                "id": "date_begin",
+                "value": "2020-05-01",
+                'type': 'text/plain'
+            },
+            {
+                "id": "x",
+                "value": -73.63834417943312,
+                'type': 'text/plain'
+            },
+            {
+                "id": "y",
+                "value": 45.51508872002296,
+                'type': 'text/plain'
+            },
+            {
+                "id": "time_step",
+                "value": 24,
+                'type': 'text/plain'
+            },
+            {
+                "id": "format",
+                "value": "GeoJSON",
+                'type': 'text/plain'
+            }]
+    }
 }
 
 
@@ -241,7 +277,7 @@ def query_es(es_object, index_name, date_end, date_begin, layer):
     except exceptions.ElasticsearchException as error:
         msg = 'ES search error: {}' .format(error)
         LOGGER.error(msg)
-        return None
+        return None, None
 
     res_sorted = sorted(res['hits']['hits'],
                         key=lambda i: i['_source']['properties']
@@ -431,15 +467,15 @@ def transform_coord(file, x, y):
 
 
 def geo_json(data, x, y):
-"""
-return the process output in GeoJSON format
+    """
+    return the process output in GeoJSON format
 
-data: JSON of graph data
-X : x corrdinate
-y : y coordinate
+    data: JSON of graph data
+    X : x corrdinate
+    y : y coordinate
 
-return : output : GeoJSON of graph data
-"""
+    return : output : GeoJSON of graph data
+    """
 
     output = {
         'type': 'Feature',
@@ -468,7 +504,7 @@ def png(data, coord_x, coord_y, time_step):
     """
 
     size = len(data['dates'])
-    x_size = size/3.7
+    x_size = size/3.3
     if x_size < 8:
         x_size = 8
     elif x_size > 18:
@@ -528,7 +564,8 @@ def png(data, coord_x, coord_y, time_step):
     ax.margins(x=0)
     plt.subplots_adjust(bottom=0.2)
 
-    b = BytesIO()
+    b = io.BytesIO()
+    plt.savefig('rdpa-graph.png', bbox_inches='tight')
     plt.savefig(b, bbox_inches='tight')
     return b
 
@@ -548,9 +585,6 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step, format_):
     return : data
     """
 
-    es = Elasticsearch(['localhost:9200'])
-    index = 'geomet-data-registry-tileindex'
-
     try:
 
         date_begin = valid_dates(date_begin)
@@ -561,36 +595,35 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step, format_):
         LOGGER.error(msg)
         return None
 
-    if es is not None:
-        res, nb_res = query_es(es, index, date_end, date_begin, layer)
+    es = Elasticsearch(['localhost:9200'])
+    index = 'geomet-data-registry-tileindex'
+    res, nb_res = query_es(es, index, date_end, date_begin, layer)
 
-        if res is not None:
-            if nb_res > 0:
-                file1 = res[0]['_source']['properties']['filepath']
-                cumul = _24_or_6(file1)
-                try:
-                    if (time_step % cumul) == 0:
-                        _x, _y = transform_coord(file1, x, y)
-                        values = get_values(res, _x, _y, cumul)
-                        data = get_graph_arrays(values, time_step)
+    if res is not None:
+        if nb_res > 0:
+            file1 = res[0]['_source']['properties']['filepath']
+            cumul = _24_or_6(file1)
+            try:
+                if (time_step % cumul) == 0:
+                    _x, _y = transform_coord(file1, x, y)
+                    values = get_values(res, _x, _y, cumul)
+                    data = get_graph_arrays(values, time_step)
 
-                        if format_ == 'GeoJSON':
-                            output = geo_json(data, x, y)
-                        else:
-                            output = png(data, x, y, time_step)
-
-                        return output
+                    if format_ == 'GeoJSON':
+                        output = geo_json(data, x, y)
                     else:
-                        LOGGER.error('invalid time step')
-                except ZeroDivisionError as error:
-                    msg = 'layer error :  {}' .format(error)
-                    LOGGER.error(msg)
-            else:
-                LOGGER.error('no data found')
+                        output = png(data, x, y, time_step)
+
+                    return output
+                else:
+                    LOGGER.error('invalid time step')
+            except ZeroDivisionError as error:
+                msg = 'layer error :  {}' .format(error)
+                LOGGER.error(msg)
         else:
-            LOGGER.error('failed to extract data')
+            LOGGER.error('no data found')
     else:
-        LOGGER.error('not connected')
+        LOGGER.error('failed to extract data')
 
     return None
 
@@ -660,7 +693,10 @@ try:
                 raise ProcessorExecuteError(msg)
 
             if format_ == 'PNG':
-                return output.getvalue()
+                if output is not None:
+                    return output.getvalue()
+                else:
+                    return output
             else:
                 return output
 
