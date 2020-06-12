@@ -29,7 +29,7 @@
 
 import click
 
-from msc_pygeoapi.process.weather.test import test_execute
+from msc_pygeoapi.process.weather.rdpa_graph import rdpa_graph_execute
 
 
 @click.group()
@@ -37,4 +37,4 @@ def weather():
     pass
 
 
-weather.add_command(test_execute)
+weather.add_command(rdpa_graph_execute)
