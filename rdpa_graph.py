@@ -28,12 +28,13 @@
 # =================================================================
 
 import click
+from datetime import datetime, timedelta
 import json
 import logging
 import matplotlib.pyplot as plt
 import io
 
-from datetime import datetime, timedelta
+
 from elasticsearch import Elasticsearch, exceptions
 from osgeo import gdal, osr
 from pyproj import Proj, transform
@@ -536,12 +537,9 @@ def png(data, coord_x, coord_y, time_step):
     ax2.set_ylim(0, (max(y2) * 1.1))
 
     label = []
-    spacing = int(round((size/25)))
-    if spacing < 1:
+    spacing = int(round((size/124)*4))
+    if spacing == 0:
         spacing = 1
-    if spacing > 4:
-        spacing = 4
-
     cmpt = spacing
     if time_step == 6 and spacing == 4:
         for i in range(len(data['dates'])):
