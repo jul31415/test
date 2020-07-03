@@ -35,7 +35,6 @@ import logging
 import os
 
 from elasticsearch import Elasticsearch, exceptions
-from mpl.toolkits.basemap import Basemap
 import numpy as np
 from osgeo import gdal, osr
 from PIL import Image
