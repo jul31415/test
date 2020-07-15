@@ -32,18 +32,23 @@ import click
 from datetime import datetime
 import json
 import logging
-import os
 
 from elasticsearch import Elasticsearch, exceptions
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 import numpy as np
 from osgeo import gdal, osr
 from PIL import Image
+from pyproj import Proj, transform
+
 
 LOGGER = logging.getLogger(__name__)
 
 DATE_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 
-CANADA_BBOX = '-158.203125, 83.215693, -44.296875, 36.879621'
+CANADA_BBOX = '-158.203125, 36.879621, -44.296875, 83.215693'
+WORLD_BBOX = '-180.25, -90.25, 179.75, 89.75'
 
 PROCESS_METADATA = {
     'version': '0.1.0',
@@ -100,7 +105,7 @@ PROCESS_METADATA = {
     }, {
         'id': 'bbox',
         'title': 'bounding box',
-        'description': '"x1, y1, x2, y2"',
+        'description': '"x_min, y_min, x_max, y_max"',
         'input': {
             'literalDataDomain': {
                 'dataType': 'string',
@@ -140,7 +145,8 @@ PROCESS_METADATA = {
         'inputs': [{
                 "id": "layers",
                 "value":
-                "GEPS.DIAG.24_T8.ERGE15,GEPS.DIAG.24_T8.ERGE20,GEPS.DIAG.24_T8.ERGE25"
+                "GEPS.DIAG.24_T8.ERGE15," +
+                "GEPS.DIAG.24_T8.ERGE20,GEPS.DIAG.24_T8.ERGE25"
             },
             {
                 "id": "forecast-hour",
@@ -259,15 +265,9 @@ def get_files(layers, fh, mr):
                 return None
 
         except exceptions.ElasticsearchException as error:
-            msg = 'ES search error: {}' .format(error)
+            msg = 'ES search failed: {}' .format(error)
             LOGGER.error(msg)
             return None
-
-        except ConnectionRefusedError as error:
-            msg = 'ES not connected: {}'.format(error)
-            LOGGER.error(msg)
-            return None
-
     return files
 
 
@@ -344,7 +344,56 @@ def band_ordre_L(bands):
     return bands
 
 
-def get_new_array(path, bands):
+def transform_coord(file, bbox):
+    """
+    transform a lat long coordinate into the projection of the given file
+
+    file : file to extract th projection from
+    x : x coordinate (long)
+    y : y coordinate (lat)
+
+    return : _x _y : coordinata in transformed projection
+    """
+    g_bbox = []
+    ds = gdal.Open(file)
+
+    srs = osr.SpatialReference()
+    srs.ImportFromWkt(ds.GetProjection())
+    inProj = Proj('epsg:4326')
+    outProj = Proj(srs.ExportToProj4())
+    print(outProj)
+    x, y = transform(inProj, outProj, float(bbox[0]), float(bbox[1]))
+    g_bbox.append(x)
+    g_bbox.append(y)
+    x, y = transform(inProj, outProj, float(bbox[2]), float(bbox[3]))
+    g_bbox.append(x)
+    g_bbox.append(y)
+    print(g_bbox)
+    return g_bbox
+
+
+def read_croped_array(band, geotransform, bbox):
+
+    xinit = geotransform[0]
+    yinit = geotransform[3]
+
+    xsize = geotransform[1]
+    ysize = geotransform[5]
+
+    p1 = (float(bbox[0]), float(bbox[3]))
+    p2 = (float(bbox[2]), float(bbox[1]))
+
+    row1 = int((p1[1] - yinit)/ysize)
+    col1 = int((p1[0] - xinit)/xsize)
+
+    row2 = int((p2[1] - yinit)/ysize)
+    col2 = int((p2[0] - xinit)/xsize)
+
+    array = band.ReadAsArray(col1, row1, col2 - col1 + 1, row2 - row1 + 1)
+    return array
+
+
+def get_new_array(path, bands, bbox):
 
     """
     combines 3 file into one array for vigilance
@@ -361,16 +410,18 @@ def get_new_array(path, bands):
         msg = 'Cannot open file: {}, assigning NA'.format(err)
         LOGGER.error(msg)
 
+    geotransform = ds.GetGeoTransform()
+    gdal_bbox = bbox
     band = bands[0]
     srcband = ds.GetRasterBand(band)
-    array1 = srcband.ReadAsArray()
+    array1 = read_croped_array(srcband, geotransform, gdal_bbox)
     array1[array1 < 40] = 0
     array1[(array1 >= 40) & (array1 < 60)] = 1
     array1[array1 >= 60] = 2
 
     band = bands[1]
     srcband = ds.GetRasterBand(band)
-    array2 = srcband.ReadAsArray()
+    array2 = read_croped_array(srcband, geotransform, gdal_bbox)
     array2[(array2 >= 1) & (array2 < 20)] = 3
     array2[(array2 >= 20) & (array2 < 40)] = 4
     array2[(array2 >= 40) & (array2 < 60)] = 6
@@ -378,7 +429,7 @@ def get_new_array(path, bands):
 
     band = bands[2]
     srcband = ds.GetRasterBand(band)
-    array3 = srcband.ReadAsArray()
+    array3 = read_croped_array(srcband, geotransform, gdal_bbox)
     array3[(array3 >= 1) & (array3 < 20)] = 5
     array3[(array3 >= 20) & (array3 < 40)] = 8
     array3[(array3 >= 40) & (array3 < 60)] = 9
@@ -399,21 +450,25 @@ def create_file(new_array, path, bbox):
 
     return : True if the file is created succesfully
     """
+    print('ok')
+    try:
 
-    ds = gdal.Open(path)
+        ds = gdal.Open(path)
+        driver = gdal.GetDriverByName('GTiff')
+        ysize, xsize = new_array.shape
 
-    driver = gdal.GetDriverByName('GTiff')
-    xsize = ds.RasterXSize
-    ysize = ds.RasterYSize
-
-    do = driver.Create('v.tif',
-                       xsize, ysize, 1, gdal.GDT_Byte)
+        do = driver.Create('v.tif',
+                           xsize, ysize, 1, gdal.GDT_Byte)
+    except RuntimeError as err:
+        msg = 'failed to create vigilance raster: {}'.format(err)
+        LOGGER.error(msg)
+        return False
 
     srs = osr.SpatialReference()
     wkt = ds.GetProjection()
     srs.ImportFromWkt(wkt)
     do.SetProjection(srs.ExportToWkt())
-    gt = ds.GetGeoTransform()
+    gt = [float(bbox[0]), 0.5, 0.0, float(bbox[3]), 0.0, -0.5]
     do.SetGeoTransform(gt)
 
     outband = do.GetRasterBand(1)
@@ -439,29 +494,38 @@ def create_file(new_array, path, bbox):
     outband.SetRasterColorTable(colors)
     outband.SetRasterColorInterpretation(gdal.GCI_PaletteIndex)
 
-    # crop raster
-    try:
-        do = gdal.Translate('vn.tif', do, projWin=bbox, widthPct=400,
-                            heightPct=400)
-        do = None
-        im = Image.open('vn.tif')
-        im.save('vigilance.png')
-        os.remove('vn.tif')
-        os.remove('v.tif')
-        return True
 
-    except RuntimeError as err:
-        msg = 'Invalid bbox: {}'.format(err)
-        LOGGER.error(msg)
+def add_basemap(data, bbox):
+    """
+    add the basemap spacified by the bbox to the vigilance data
 
-    do = None
-    os.remove('v.tif')
-    return False
+    data : vigilance data
+    bbox : geo exetent of the data
+
+    return : map : png in bytes of the produced vigilance map
+    with the bsaemap
+    """
+    ny, nx = data.shape
+    lons = np.linspace(float(bbox[0]), float(bbox[2]), nx)
+    lats = np.linspace(float(bbox[3]), float(bbox[1]), ny)
+    lons, lats = np.meshgrid(lons, lats)
+
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    plt.contourf(lons, lats, data, 60, transform=ccrs.PlateCarree(),
+                 cmap='OrRd')
+    ax.coastlines()
+    ax.add_feature(cfeature.BORDERS, linestyle='-', edgecolor='black')
+    states_provinces = cfeature.NaturalEarthFeature(category='cultural', name='admin_1_states_provinces_lines', scale='50m', facecolor='none')
+    ax.add_feature(states_provinces, edgecolor='black')
+
+    plt.title('vigilance')
+    plt.savefig('vigi.png', bbox_inches='tight', dpi=200)
 
 
 def generate_vigilance(layers, fh, mr, bbox, format_):
     """
-    generate a vigilance file (with specified format) according to the thresholds
+    generate a vigilance file (with specified format)
+    according to the thresholds
 
     layers : 3 layer of the 3 different thresholds
     fh : forcast hour
@@ -473,15 +537,18 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
     """
 
     gdal.UseExceptions()
-    if len(layers) == 3:
 
+    if len(layers) == 3:
         prefix = valid_layer(layers)
         if prefix is None:
             return None
 
         files = get_files(layers, fh, mr)
 
-        if files is not None and len(files) == 3:
+        if files is None:
+            return None
+
+        if len(files) == 3:
             path, bands = get_bands(files)
 
             if prefix == 'ERGE':
@@ -490,11 +557,9 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
             if prefix == 'ERLE':
                 bands = band_ordre_L(bands)
 
-            new_array = get_new_array(path, bands)
-            if create_file(new_array, path, bbox):
-                return format_ + ' file on disk'
-            else:
-                return None
+            vigi_data = get_new_array(path, bands, bbox)
+            add_basemap(vigi_data, bbox)
+            return format_ + ' basemaped file on disk'
         else:
             LOGGER.error('invalid layer')
             return None
