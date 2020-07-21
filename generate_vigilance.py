@@ -34,14 +34,14 @@ import json
 import logging
 
 from elasticsearch import Elasticsearch, exceptions
+from matplotlib.colors import ListedColormap
+import matplotlib.image as image
 import matplotlib.pyplot as plt
+from matplotlib.offsetbox import AnchoredText, OffsetImage, AnnotationBbox
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import numpy as np
-from osgeo import gdal, osr
-from PIL import Image
-from pyproj import Proj, transform
-
+from osgeo import gdal
 
 LOGGER = logging.getLogger(__name__)
 
@@ -49,6 +49,10 @@ DATE_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 
 CANADA_BBOX = '-158.203125, 36.879621, -44.296875, 83.215693'
 WORLD_BBOX = '-180.25, -90.25, 179.75, 89.75'
+COLOR_MAP = [[1, 1, 1, 1],
+             [1, 1, 0, 1],
+             [1, 0.5, 0, 1],
+             [1, 0, 0, 1]]
 
 PROCESS_METADATA = {
     'version': '0.1.0',
@@ -168,50 +172,78 @@ PROCESS_METADATA = {
 }
 
 
+def convert_bbox(bbox):
+    """
+    validate and convert (string to float) the bounding box
+
+    bbox : bounding box to validate/convert
+
+    return : bbox : converted boundaray box
+    """
+    i = 0
+    for x in bbox:
+        bbox[i] = float(x)
+        i += 1
+
+    if bbox[0] >= -180 and bbox[0] < bbox[2] and bbox[2] <= 180:
+        if bbox[1] >= -90 and bbox[1] < bbox[3] and bbox[3] <= 90:
+            return bbox
+
+    return None
+
+
 def valid_layer(layers):
 
     """
-    validate if the layers are ERGE or ERLE
+    validate the layers and return the layer data
 
     layers : layers to validate
 
-    return : sufix (ERGE or ERLE) if the layers are valid
+    return : sufix : (ERGE or ERLE) if the layers are valid
+             prefix : weather variable
+             model : GEPS or REPS
+             threholds : list of thresholds
     """
 
     prefix = []
     sufix = []
+    models = []
+    tresholds = []
     for layer in layers:
 
-        pos = layer.rfind('.')
-
+        'GEPS.DIAG.24_T8.ERGE15'
         layer_ = layer.split('.')
-        sufix_ = layer_[-1]
+        model = layer_[0]
+        prefix_ = layer_[2]
+        sufix_ = layer_[3]
         sufix_ = sufix_[0:4]
 
-        # if ERGE2.5
-        if sufix_ == '5':
-            sufix_ = layer_[-2]
-            sufix_ = sufix_[0:4]
-            pos -= 6
+        pos = layer_[3].rfind('E')
+        if len(layer_) == 5:
+            treshold = float(layer_[3][pos + 1:] + '.' + layer_[4])
+        else:
+            treshold = int(layer_[3][pos + 1:])
 
-        prefix.append(layer[0:pos])
+        prefix.append(prefix_)
         sufix.append(sufix_)
+        models.append(model)
+        tresholds.append(treshold)
 
         if sufix_ == 'ERGE' or sufix_ == 'ERLE':
             pass
         else:
-            LOGGER.error('invalid layer, type need to be ERGE or ERLE')
-            return None
+            LOGGER.error('invalid layer type, need to be ERGE or ERLE')
+            return None, None, None, None
 
     if prefix[0] == prefix[1]:
         if prefix[1] == prefix[2]:
 
             if sufix[0] == sufix[1]:
                 if sufix[1] == sufix[2]:
-                    return sufix[0]
+                    return sufix[0], prefix[0], models[0], tresholds
 
     LOGGER.error('invalid layers, weather variables need to match')
-    return None
+    return None, None, None, None
 
 
 def get_files(layers, fh, mr):
@@ -344,34 +376,6 @@ def band_ordre_L(bands):
     return bands
 
 
-def transform_coord(file, bbox):
-    """
-    transform a lat long coordinate into the projection of the given file
-
-    file : file to extract th projection from
-    x : x coordinate (long)
-    y : y coordinate (lat)
-
-    return : _x _y : coordinata in transformed projection
-    """
-    g_bbox = []
-    ds = gdal.Open(file)
-
-    srs = osr.SpatialReference()
-    srs.ImportFromWkt(ds.GetProjection())
-    inProj = Proj('epsg:4326')
-    outProj = Proj(srs.ExportToProj4())
-    print(outProj)
-    x, y = transform(inProj, outProj, float(bbox[0]), float(bbox[1]))
-    g_bbox.append(x)
-    g_bbox.append(y)
-    x, y = transform(inProj, outProj, float(bbox[2]), float(bbox[3]))
-    g_bbox.append(x)
-    g_bbox.append(y)
-    print(g_bbox)
-    return g_bbox
-
-
 def read_croped_array(band, geotransform, bbox):
 
     xinit = geotransform[0]
@@ -380,8 +384,8 @@ def read_croped_array(band, geotransform, bbox):
     xsize = geotransform[1]
     ysize = geotransform[5]
 
-    p1 = (float(bbox[0]), float(bbox[3]))
-    p2 = (float(bbox[2]), float(bbox[1]))
+    p1 = (bbox[0], bbox[3])
+    p2 = (bbox[2], bbox[1])
 
     row1 = int((p1[1] - yinit)/ysize)
     col1 = int((p1[0] - xinit)/xsize)
@@ -411,91 +415,58 @@ def get_new_array(path, bands, bbox):
         LOGGER.error(msg)
 
     geotransform = ds.GetGeoTransform()
-    gdal_bbox = bbox
     band = bands[0]
     srcband = ds.GetRasterBand(band)
-    array1 = read_croped_array(srcband, geotransform, gdal_bbox)
+    array1 = read_croped_array(srcband, geotransform, bbox)
     array1[array1 < 40] = 0
     array1[(array1 >= 40) & (array1 < 60)] = 1
-    array1[array1 >= 60] = 2
+    array1[array1 >= 60] = 1
 
     band = bands[1]
     srcband = ds.GetRasterBand(band)
-    array2 = read_croped_array(srcband, geotransform, gdal_bbox)
-    array2[(array2 >= 1) & (array2 < 20)] = 3
-    array2[(array2 >= 20) & (array2 < 40)] = 4
-    array2[(array2 >= 40) & (array2 < 60)] = 6
-    array2[array2 >= 60] = 7
+    array2 = read_croped_array(srcband, geotransform, bbox)
+    array2[(array2 >= 1) & (array2 < 20)] = 1
+    array2[(array2 >= 20) & (array2 < 40)] = 1
+    array2[(array2 >= 40) & (array2 < 60)] = 2
+    array2[array2 >= 60] = 2
 
     band = bands[2]
     srcband = ds.GetRasterBand(band)
-    array3 = read_croped_array(srcband, geotransform, gdal_bbox)
-    array3[(array3 >= 1) & (array3 < 20)] = 5
-    array3[(array3 >= 20) & (array3 < 40)] = 8
-    array3[(array3 >= 40) & (array3 < 60)] = 9
-    array3[array3 >= 60] = 10
+    array3 = read_croped_array(srcband, geotransform, bbox)
+    array3[(array3 >= 1) & (array3 < 20)] = 1
+    array3[(array3 >= 20) & (array3 < 40)] = 2
+    array3[(array3 >= 40) & (array3 < 60)] = 2
+    array3[array3 >= 60] = 3
 
     max_array = np.maximum(array1, array2)
     max_array = np.maximum(max_array, array3)
     return max_array
 
 
-def create_file(new_array, path, bbox):
+def get_data_text(prefix, sufix, tresholds, mr, model, fh):
 
     """
-    create a geo tiff file from the compiled array for the vigilance product
+    Provide the text string of the metedata for the png output
 
-    new_array : vigilance array
-    path : file paths
+    predix : weather variable
+    sufix : ERGE or ERLE
+    tresholds : list of 3 user specified thresholds
+    mr : model run
+    model : GEPS or REPS
+    fh : forcast hour
 
-    return : True if the file is created succesfully
+    return : textstr : formated string for the png
     """
-    print('ok')
-    try:
+    layer = prefix + ' ' + sufix
+    trh = [tresholds[0], tresholds[1], tresholds[2]]
+    textstr = '\n'.join(('Vigilance pour/for:  {} {}'. format(layer, trh),
+                         'Émis/Issued: {} UTC - {}'.format(mr, model),
+                         'Prévision/Forecast: {} UTC'.format(fh)))
 
-        ds = gdal.Open(path)
-        driver = gdal.GetDriverByName('GTiff')
-        ysize, xsize = new_array.shape
-
-        do = driver.Create('v.tif',
-                           xsize, ysize, 1, gdal.GDT_Byte)
-    except RuntimeError as err:
-        msg = 'failed to create vigilance raster: {}'.format(err)
-        LOGGER.error(msg)
-        return False
-
-    srs = osr.SpatialReference()
-    wkt = ds.GetProjection()
-    srs.ImportFromWkt(wkt)
-    do.SetProjection(srs.ExportToWkt())
-    gt = [float(bbox[0]), 0.5, 0.0, float(bbox[3]), 0.0, -0.5]
-    do.SetGeoTransform(gt)
-
-    outband = do.GetRasterBand(1)
-    outband.SetStatistics(np.min(new_array), np.max(new_array),
-                          np.average(new_array), np.std(new_array))
-    outband.WriteArray(new_array)
-
-    # set colors
-    colors = gdal.ColorTable()
-    colors.SetColorEntry(0, (255, 255, 255))
-    colors.SetColorEntry(1, (246, 255, 0))
-    colors.SetColorEntry(2, (255, 230, 0))
-    colors.SetColorEntry(3, (255, 200, 0))
-    colors.SetColorEntry(4, (255, 180, 0))
-    colors.SetColorEntry(5, (255, 160, 0))
-    colors.SetColorEntry(6, (255, 160, 0))
-    colors.SetColorEntry(7, (255, 120, 0))
-    colors.SetColorEntry(8, (255, 80, 0))
-    colors.SetColorEntry(9, (255, 40, 0))
-    colors.SetColorEntry(10, (255, 0, 0))
-
-    # apply colors
-    outband.SetRasterColorTable(colors)
-    outband.SetRasterColorInterpretation(gdal.GCI_PaletteIndex)
+    return textstr
 
 
-def add_basemap(data, bbox):
+def add_basemap(data, bbox, textstr):
     """
     add the basemap spacified by the bbox to the vigilance data
 
@@ -505,20 +476,49 @@ def add_basemap(data, bbox):
     return : map : png in bytes of the produced vigilance map
     with the bsaemap
     """
+    # ajout des données de vigilance
     ny, nx = data.shape
-    lons = np.linspace(float(bbox[0]), float(bbox[2]), nx)
-    lats = np.linspace(float(bbox[3]), float(bbox[1]), ny)
+    lons = np.linspace(bbox[0], bbox[2], nx)
+    lats = np.linspace(bbox[3], bbox[1], ny)
     lons, lats = np.meshgrid(lons, lats)
-
     ax = plt.axes(projection=ccrs.PlateCarree())
+    colors = ListedColormap(COLOR_MAP)
     plt.contourf(lons, lats, data, 60, transform=ccrs.PlateCarree(),
-                 cmap='OrRd')
-    ax.coastlines()
-    ax.add_feature(cfeature.BORDERS, linestyle='-', edgecolor='black')
-    states_provinces = cfeature.NaturalEarthFeature(category='cultural', name='admin_1_states_provinces_lines', scale='50m', facecolor='none')
-    ax.add_feature(states_provinces, edgecolor='black')
+                 cmap=colors)
 
-    plt.title('vigilance')
+    # ajout de la basemap
+    ax.coastlines(linewidth=0.35)
+    ax.add_feature(cfeature.BORDERS, linestyle='-',
+                   edgecolor='black',
+                   linewidth=0.35)
+    state = cfeature.NaturalEarthFeature(category='cultural',
+                                         name='admin_1_states_provinces_lines',
+                                         scale='50m', facecolor='none')
+    ax.add_feature(state, edgecolor='black', linewidth=0.35)
+
+    # ajout des données de la carte
+    text_box = AnchoredText(textstr, frameon=True, loc=4, pad=0.5,
+                            borderpad=0.05, prop={'size': 5})
+    plt.setp(text_box.patch, facecolor='white', alpha=1, linewidth=0.35)
+    ax.add_artist(text_box)
+
+    # ajout du logo
+    str1 = '                Environnement et Changement climatique Canada'
+    str2 = '                Environment and Climate Change Canada'
+    textstr2 = '\n'.join((str1, str2))
+    text_box2 = AnchoredText(textstr2, frameon=True, loc=2, pad=0.5,
+                             borderpad=0, prop={'size': 4})
+    plt.setp(text_box2.patch, facecolor='white', alpha=1, linewidth=0.35,
+             zorder=1)
+    ax.add_artist(text_box2)
+
+    im = image.imread('msc_pygeoapi/process/weather/canada flag.png')
+    imagebox = OffsetImage(im, zoom=0.07)
+    ab = AnnotationBbox(imagebox, (0.005, 0.99), xycoords=ax.transAxes,
+                        frameon=False, box_alignment=(0, 1))
+    ab.set_zorder(10)
+    ax.add_artist(ab)
+
     plt.savefig('vigi.png', bbox_inches='tight', dpi=200)
 
 
@@ -537,35 +537,44 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
     """
 
     gdal.UseExceptions()
+    bbox = convert_bbox(bbox)
 
-    if len(layers) == 3:
-        prefix = valid_layer(layers)
-        if prefix is None:
-            return None
+    if bbox is not None:
 
-        files = get_files(layers, fh, mr)
+        if len(layers) == 3:
+            sufix, prefix, model, tresholds = valid_layer(layers)
+            if sufix is None:
+                return None
 
-        if files is None:
-            return None
+            files = get_files(layers, fh, mr)
 
-        if len(files) == 3:
-            path, bands = get_bands(files)
+            if files is None:
+                return None
 
-            if prefix == 'ERGE':
-                bands = band_ordre_G(bands)
+            if len(files) == 3:
+                path, bands = get_bands(files)
 
-            if prefix == 'ERLE':
-                bands = band_ordre_L(bands)
+                if sufix == 'ERGE':
+                    bands = band_ordre_G(bands)
 
-            vigi_data = get_new_array(path, bands, bbox)
-            add_basemap(vigi_data, bbox)
-            return format_ + ' basemaped file on disk'
+                if sufix == 'ERLE':
+                    bands = band_ordre_L(bands)
+
+                vigi_data = get_new_array(path, bands, bbox)
+                textstr = get_data_text(prefix, sufix, tresholds, mr, model,
+                                        fh)
+                add_basemap(vigi_data, bbox, textstr)
+                return format_ + ' basemaped file on disk'
+            else:
+                LOGGER.error('invalid layer')
+                return None
+
         else:
-            LOGGER.error('invalid layer')
+            LOGGER.error('Invalid number of layers')
             return None
 
     else:
-        LOGGER.error('Invalid number of layers')
+        LOGGER.error('Invalid bbox')
         return None
 
 
