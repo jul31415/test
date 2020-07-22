@@ -36,8 +36,9 @@ import logging
 from elasticsearch import Elasticsearch, exceptions
 from matplotlib.colors import ListedColormap
 import matplotlib.image as image
-import matplotlib.pyplot as plt
 from matplotlib.offsetbox import AnchoredText, OffsetImage, AnnotationBbox
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import numpy as np
@@ -46,9 +47,8 @@ from osgeo import gdal
 LOGGER = logging.getLogger(__name__)
 
 DATE_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
-
-CANADA_BBOX = '-158.203125, 36.879621, -44.296875, 83.215693'
-WORLD_BBOX = '-180.25, -90.25, 179.75, 89.75'
+CANADA_BBOX = '-140, 35, -44, 83'
+LAMBERT_BBOX = [-170, 15, -40, 90]
 COLOR_MAP = [[1, 1, 1, 1],
              [1, 1, 0, 1],
              [1, 0.5, 0, 1],
@@ -211,7 +211,6 @@ def valid_layer(layers):
     tresholds = []
     for layer in layers:
 
-        'GEPS.DIAG.24_T8.ERGE15'
         layer_ = layer.split('.')
         model = layer_[0]
         prefix_ = layer_[2]
@@ -261,6 +260,7 @@ def get_files(layers, fh, mr):
     es = Elasticsearch(['localhost:9200'])
     index = 'geomet-data-registry-tileindex'
     files = []
+    weather_variables = []
 
     for layer in layers:
 
@@ -290,17 +290,20 @@ def get_files(layers, fh, mr):
             try:
                 files.append(res['hits']['hits'][0]
                              ['_source']['properties']['filepath'])
+                weather_variables.append(res['hits']['hits'][0]
+                                         ['_source']['properties']
+                                         ['weather_variable'])
 
             except IndexError as error:
                 msg = 'invalid input value: {}' .format(error)
                 LOGGER.error(msg)
-                return None
+                return None, None
 
         except exceptions.ElasticsearchException as error:
             msg = 'ES search failed: {}' .format(error)
             LOGGER.error(msg)
-            return None
-    return files
+            return None, None
+    return files, weather_variables
 
 
 def get_bands(files):
@@ -443,7 +446,28 @@ def get_new_array(path, bands, bbox):
     return max_array
 
 
-def get_data_text(prefix, sufix, tresholds, mr, model, fh):
+def find_best_projection(bbox):
+    """
+    find whether the LCC or the plateCarree projection is better
+    according to the bbox
+
+    bbox : bonding box
+
+    return : project : best projection for the given bbox
+    """
+
+    project = ccrs.PlateCarree()
+
+    if bbox[0] >= LAMBERT_BBOX[0] and bbox[0] <= LAMBERT_BBOX[2]:
+        if bbox[2] >= LAMBERT_BBOX[0] and bbox[2] <= LAMBERT_BBOX[2]:
+            if bbox[1] >= LAMBERT_BBOX[1] and bbox[1] <= LAMBERT_BBOX[3]:
+                if bbox[3] >= LAMBERT_BBOX[1] and bbox[3] <= LAMBERT_BBOX[3]:
+                    project = ccrs.LambertConformal()
+
+    return project
+
+
+def get_data_text(variable, tresholds, mr, model, fh):
 
     """
     Provide the text string of the metedata for the png output
@@ -457,11 +481,12 @@ def get_data_text(prefix, sufix, tresholds, mr, model, fh):
 
     return : textstr : formated string for the png
     """
-    layer = prefix + ' ' + sufix
+    mr = mr.strftime(DATE_FORMAT)
+    fh = fh.strftime(DATE_FORMAT)
     trh = [tresholds[0], tresholds[1], tresholds[2]]
-    textstr = '\n'.join(('Vigilance pour/for:  {} {}'. format(layer, trh),
-                         'Émis/Issued: {} UTC - {}'.format(mr, model),
-                         'Prévision/Forecast: {} UTC'.format(fh)))
+    textstr = '\n'.join(('{} {} - {}'. format(variable, trh, model),
+                         'Émis/Issued: {} '.format(mr),
+                         'Prévision/Forecast: {} '.format(fh)))
 
     return textstr
 
@@ -476,12 +501,14 @@ def add_basemap(data, bbox, textstr):
     return : map : png in bytes of the produced vigilance map
     with the bsaemap
     """
+
+    project = find_best_projection(bbox)
     # ajout des données de vigilance
     ny, nx = data.shape
     lons = np.linspace(bbox[0], bbox[2], nx)
     lats = np.linspace(bbox[3], bbox[1], ny)
     lons, lats = np.meshgrid(lons, lats)
-    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax = plt.axes(projection=project)
     colors = ListedColormap(COLOR_MAP)
     plt.contourf(lons, lats, data, 60, transform=ccrs.PlateCarree(),
                  cmap=colors)
@@ -519,6 +546,20 @@ def add_basemap(data, bbox, textstr):
     ab.set_zorder(10)
     ax.add_artist(ab)
 
+    # ajout de la légende
+    str1 = 'Be aware / Soyez Attentif'
+    str2 = 'Be prepared / Soyez très vigilant'
+    str3 = 'Be extra cautious / Vigilance absolue'
+    y_patch = mpatches.Patch(color='yellow', label=str1)
+    o_patch = mpatches.Patch(color='orange', label=str2)
+    r_patch = mpatches.Patch(color='red', label=str3)
+    leg = plt.legend(handles=[y_patch, o_patch, r_patch], loc='lower left',
+                     bbox_to_anchor=(0, 0), fancybox=False, fontsize=4,
+                     framealpha=1, borderaxespad=0.05, edgecolor='black',
+                     borderpad=0.5)
+    leg_frame = leg.get_frame()
+    plt.setp(leg_frame, linewidth=0.35)
+
     plt.savefig('vigi.png', bbox_inches='tight', dpi=200)
 
 
@@ -546,7 +587,7 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
             if sufix is None:
                 return None
 
-            files = get_files(layers, fh, mr)
+            files, variables = get_files(layers, fh, mr)
 
             if files is None:
                 return None
@@ -561,7 +602,7 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
                     bands = band_ordre_L(bands)
 
                 vigi_data = get_new_array(path, bands, bbox)
-                textstr = get_data_text(prefix, sufix, tresholds, mr, model,
+                textstr = get_data_text(variables[0], tresholds, mr, model,
                                         fh)
                 add_basemap(vigi_data, bbox, textstr)
                 return format_ + ' basemaped file on disk'
