@@ -33,16 +33,18 @@ from datetime import datetime
 import json
 import logging
 
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 from elasticsearch import Elasticsearch, exceptions
+from io import BytesIO
 from matplotlib.colors import ListedColormap
 import matplotlib.image as image
 from matplotlib.offsetbox import AnchoredText, OffsetImage, AnnotationBbox
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
 import numpy as np
 from osgeo import gdal
+from pyproj import Proj
 
 LOGGER = logging.getLogger(__name__)
 
@@ -139,9 +141,7 @@ PROCESS_METADATA = {
         'title': 'output wms vigilance product',
         'output': {
             'formats': [{
-                'mimeType': 'application/json'
-            }, {
-                'mimeType': 'text/csv'
+                'mimeType': 'imaje/png'
             }]
         }
     }],
@@ -176,9 +176,9 @@ def convert_bbox(bbox):
     """
     validate and convert (string to float) the bounding box
 
-    bbox : bounding box to validate/convert
+    param bbox : bounding box to validate/convert
 
-    return : bbox : converted boundaray box
+    return : bbox : valid and float converted bounding box
     """
     i = 0
     for x in bbox:
@@ -197,12 +197,11 @@ def valid_layer(layers):
     """
     validate the layers and return the layer data
 
-    layers : layers to validate
+    param layers : layers to validate
 
-    return : sufix : (ERGE or ERLE) if the layers are valid
-             prefix : weather variable
+    return : sufix : (ERGE or ERLE) 
              model : GEPS or REPS
-             threholds : list of thresholds
+             thresholds : list of thresholds
     """
 
     prefix = []
@@ -232,17 +231,17 @@ def valid_layer(layers):
             pass
         else:
             LOGGER.error('invalid layer type, need to be ERGE or ERLE')
-            return None, None, None, None
+            return None, None, None
 
     if prefix[0] == prefix[1]:
         if prefix[1] == prefix[2]:
 
             if sufix[0] == sufix[1]:
                 if sufix[1] == sufix[2]:
-                    return sufix[0], prefix[0], models[0], tresholds
+                    return sufix[0], models[0], tresholds
 
     LOGGER.error('invalid layers, weather variables need to match')
-    return None, None, None, None
+    return None, None, None
 
 
 def get_files(layers, fh, mr):
@@ -250,9 +249,9 @@ def get_files(layers, fh, mr):
     """
     ES search to find files names
 
-    layers : arrays of three layers
-    fh : forcast hour datetime
-    mr : reference datetime = model run
+    param layers : arrays of three layers
+    param fh : forcast hour datetime
+    param mr : model run
 
     return : files : arrays of threee file paths
     """
@@ -311,7 +310,7 @@ def get_bands(files):
     """
     extract the band number from the file path
 
-    files : arrays of three file paths
+    param files : arrays of three file paths
 
     return : paths : file paths
              bands : grib bands numbers
@@ -331,7 +330,7 @@ def band_ordre_G(bands):
     """
     sort thresholds bands in ascending order  for ERGE
 
-    bands : bands to sort
+    param bands : bands to sort
 
     return : bands : sorted band arrays
     """
@@ -357,7 +356,7 @@ def band_ordre_L(bands):
     """
     sort thresholds bands in descending order  for ERGE
 
-    bands : bands to sort
+    param bands : bands to sort
 
     return : bands : sorted band array
     """
@@ -380,6 +379,15 @@ def band_ordre_L(bands):
 
 
 def read_croped_array(band, geotransform, bbox):
+    """
+    create a array within the bbox from the grib band
+
+    param band : grib band
+    param geatransform : geographic info of the band
+    param bbox : bounding box
+
+    return : array : cropped array
+    """
 
     xinit = geotransform[0]
     yinit = geotransform[3]
@@ -405,8 +413,8 @@ def get_new_array(path, bands, bbox):
     """
     combines 3 file into one array for vigilance
 
-    paths : arrays of three file paths
-    band : array of three grib band number
+    param paths : arrays of three file paths
+    param band : array of three grib band number
 
     return : max_array : the combined array for vigilance
     """
@@ -451,7 +459,7 @@ def find_best_projection(bbox):
     find whether the LCC or the plateCarree projection is better
     according to the bbox
 
-    bbox : bonding box
+    param bbox : bonding box
 
     return : project : best projection for the given bbox
     """
@@ -472,12 +480,11 @@ def get_data_text(variable, tresholds, mr, model, fh):
     """
     Provide the text string of the metedata for the png output
 
-    predix : weather variable
-    sufix : ERGE or ERLE
-    tresholds : list of 3 user specified thresholds
-    mr : model run
-    model : GEPS or REPS
-    fh : forcast hour
+    param variable : weather variable
+    param tresholds : list of 3 user specified thresholds
+    param mr : model run
+    param model : GEPS or REPS
+    param fh : forcast hour
 
     return : textstr : formated string for the png
     """
@@ -495,15 +502,15 @@ def add_basemap(data, bbox, textstr):
     """
     add the basemap spacified by the bbox to the vigilance data
 
-    data : vigilance data
-    bbox : geo exetent of the data
+    param data : vigilance data
+    param bbox : geo exetent of the data
 
     return : map : png in bytes of the produced vigilance map
     with the bsaemap
     """
 
-    project = find_best_projection(bbox)
     # ajout des données de vigilance
+    project = find_best_projection(bbox)
     ny, nx = data.shape
     lons = np.linspace(bbox[0], bbox[2], nx)
     lats = np.linspace(bbox[3], bbox[1], ny)
@@ -560,7 +567,9 @@ def add_basemap(data, bbox, textstr):
     leg_frame = leg.get_frame()
     plt.setp(leg_frame, linewidth=0.35)
 
-    plt.savefig('vigi.png', bbox_inches='tight', dpi=200)
+    buffer = BytesIO()
+    plt.savefig(buffer, bbox_inches='tight', dpi=200, format='png')
+    return buffer
 
 
 def generate_vigilance(layers, fh, mr, bbox, format_):
@@ -568,13 +577,13 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
     generate a vigilance file (with specified format)
     according to the thresholds
 
-    layers : 3 layer of the 3 different thresholds
-    fh : forcast hour
-    mr : model run
-    bbox : bounding box
-    format_ : output format
+    param layers : 3 layer of the 3 different thresholds
+    param fh : forcast hour
+    param mr : model run
+    param bbox : bounding box
+    param format_ : output format
 
-    return : validation of the process
+    return : image_buffer : buffer of the png
     """
 
     gdal.UseExceptions()
@@ -583,7 +592,7 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
     if bbox is not None:
 
         if len(layers) == 3:
-            sufix, prefix, model, tresholds = valid_layer(layers)
+            sufix, model, tresholds = valid_layer(layers)
             if sufix is None:
                 return None
 
@@ -604,8 +613,8 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
                 vigi_data = get_new_array(path, bands, bbox)
                 textstr = get_data_text(variables[0], tresholds, mr, model,
                                         fh)
-                add_basemap(vigi_data, bbox, textstr)
-                return format_ + ' basemaped file on disk'
+                image_buffer = add_basemap(vigi_data, bbox, textstr)
+                return image_buffer
             else:
                 LOGGER.error('invalid layer')
                 return None
@@ -664,13 +673,11 @@ try:
             bbox = data['bbox']
             format_ = data['format']
 
-            if bbox == '':
-                bbox = CANADA_BBOX
-
             try:
-                output = generate_vigilance(layers.split(','),
-                                            fh, mr, bbox.split(','), format_)
-                return output
+                image_buffer = generate_vigilance(layers.split(','),
+                                                  fh, mr, bbox.split(','),
+                                                  format_)
+                return image_buffer.getvalue()
             except ValueError as err:
                 msg = 'Process execution error: {}'.format(err)
                 LOGGER.error(msg)
