@@ -44,7 +44,6 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 from osgeo import gdal
-from pyproj import Proj
 
 LOGGER = logging.getLogger(__name__)
 
@@ -199,7 +198,7 @@ def valid_layer(layers):
 
     param layers : layers to validate
 
-    return : sufix : (ERGE or ERLE) 
+    return : sufix : (ERGE or ERLE)
              model : GEPS or REPS
              thresholds : list of thresholds
     """
@@ -614,18 +613,18 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
                 textstr = get_data_text(variables[0], tresholds, mr, model,
                                         fh)
                 image_buffer = add_basemap(vigi_data, bbox, textstr)
-                return image_buffer
+
+                if format_ == 'png':
+                    return image_buffer
+                else:
+                    LOGGER.error('invalid format')
             else:
                 LOGGER.error('invalid layer')
-                return None
-
         else:
             LOGGER.error('Invalid number of layers')
-            return None
-
     else:
         LOGGER.error('Invalid bbox')
-        return None
+    return None
 
 
 @click.command('generate-vigilance')
@@ -643,7 +642,10 @@ def cli(ctx, layers, fh, mr, bbox, format_):
 
     output = generate_vigilance(layers.split(','), fh, mr, bbox.split(','),
                                 format_)
-    click.echo(json.dumps(output))
+    if output is not None:
+        click.echo(json.dumps('vigilance png produced, curl via pygeoapi'))
+    else:
+        return output
 
 
 try:
@@ -677,7 +679,10 @@ try:
                 image_buffer = generate_vigilance(layers.split(','),
                                                   fh, mr, bbox.split(','),
                                                   format_)
-                return image_buffer.getvalue()
+                if image_buffer is not None:
+                    return image_buffer.getvalue()
+                else:
+                    return image_buffer
             except ValueError as err:
                 msg = 'Process execution error: {}'.format(err)
                 LOGGER.error(msg)
