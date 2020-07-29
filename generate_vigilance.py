@@ -30,13 +30,13 @@
 
 import click
 from datetime import datetime
+from io import BytesIO
 import json
 import logging
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from elasticsearch import Elasticsearch, exceptions
-from io import BytesIO
 from matplotlib.colors import ListedColormap
 import matplotlib.image as image
 from matplotlib.offsetbox import AnchoredText, OffsetImage, AnnotationBbox
@@ -47,6 +47,7 @@ from osgeo import gdal
 
 LOGGER = logging.getLogger(__name__)
 
+ES_INDEX = 'geomet-data-registry-tileindex'
 DATE_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 CANADA_BBOX = '-140, 35, -44, 83'
 LAMBERT_BBOX = [-170, 15, -40, 90]
@@ -70,7 +71,7 @@ PROCESS_METADATA = {
     }],
     'inputs': [{
         'id': 'layers',
-        'title': '3 layers to produce vigilence',
+        'title': '3 layers to produce vigilance',
         'input': {
             'literalDataDomain': {
                 'dataType': 'string',
@@ -140,7 +141,7 @@ PROCESS_METADATA = {
         'title': 'output wms vigilance product',
         'output': {
             'formats': [{
-                'mimeType': 'imaje/png'
+                'mimeType': 'image/png'
             }]
         }
     }],
@@ -179,20 +180,21 @@ def convert_bbox(bbox):
 
     return : bbox : valid and float converted bounding box
     """
-    i = 0
-    for x in bbox:
-        bbox[i] = float(x)
-        i += 1
+    for index, item in enumerate(bbox):
+        bbox[index] = float(item)
 
-    if bbox[0] >= -180 and bbox[0] < bbox[2] and bbox[2] <= 180:
-        if bbox[1] >= -90 and bbox[1] < bbox[3] and bbox[3] <= 90:
-            return bbox
+    if all((bbox[0] >= -180,
+            bbox[0] < bbox[2],
+            bbox[2] <= 180,
+            bbox[1] >= -90,
+            bbox[1] < bbox[3],
+            bbox[3] <= 90)):
+        return bbox
 
     return None
 
 
 def valid_layer(layers):
-
     """
     validate the layers and return the layer data
 
@@ -232,12 +234,8 @@ def valid_layer(layers):
             LOGGER.error('invalid layer type, need to be ERGE or ERLE')
             return None, None, None
 
-    if prefix[0] == prefix[1]:
-        if prefix[1] == prefix[2]:
-
-            if sufix[0] == sufix[1]:
-                if sufix[1] == sufix[2]:
-                    return sufix[0], models[0], tresholds
+    if prefix[1:] == prefix[:-1] and sufix[1:] == sufix[:-1]:
+        return sufix[0], models[0], tresholds
 
     LOGGER.error('invalid layers, weather variables need to match')
     return None, None, None
@@ -254,25 +252,21 @@ def get_files(layers, fh, mr):
 
     return : files : arrays of threee file paths
     """
+    # TODO: use env variable for ES connection
 
     es = Elasticsearch(['localhost:9200'])
-    index = 'geomet-data-registry-tileindex'
     files = []
     weather_variables = []
 
     for layer in layers:
 
         s_object = {
-            'query':
-            {
-                'bool':
-                {
-                    'must':
-                    {
+            'query': {
+                'bool': {
+                    'must': {
                         'match': {'properties.layer.raw': layer}
                     },
-                    'filter':
-                    [
+                    'filter': [
                         {'term': {'properties.forecast_hour_datetime':
                                   fh.strftime(DATE_FORMAT)}},
                         {'term': {'properties.reference_datetime':
@@ -283,7 +277,7 @@ def get_files(layers, fh, mr):
         }
 
         try:
-            res = es.search(index=index, body=s_object)
+            res = es.search(index=ES_INDEX, body=s_object)
 
             try:
                 files.append(res['hits']['hits'][0]
@@ -308,6 +302,7 @@ def get_bands(files):
 
     """
     extract the band number from the file path
+    only works for vrt files
 
     param files : arrays of three file paths
 
@@ -458,7 +453,7 @@ def find_best_projection(bbox):
     find whether the LCC or the plateCarree projection is better
     according to the bbox
 
-    param bbox : bonding box
+    param bbox : bounding box
 
     return : project : best projection for the given bbox
     """
@@ -508,7 +503,7 @@ def add_basemap(data, bbox, textstr):
     with the bsaemap
     """
 
-    # ajout des données de vigilance
+    # adding vigilance data
     project = find_best_projection(bbox)
     ny, nx = data.shape
     lons = np.linspace(bbox[0], bbox[2], nx)
@@ -519,7 +514,7 @@ def add_basemap(data, bbox, textstr):
     plt.contourf(lons, lats, data, 60, transform=ccrs.PlateCarree(),
                  cmap=colors)
 
-    # ajout de la basemap
+    # adding the basemap
     ax.coastlines(linewidth=0.35)
     ax.add_feature(cfeature.BORDERS, linestyle='-',
                    edgecolor='black',
@@ -529,30 +524,22 @@ def add_basemap(data, bbox, textstr):
                                          scale='50m', facecolor='none')
     ax.add_feature(state, edgecolor='black', linewidth=0.35)
 
-    # ajout des données de la carte
+    # adding vigilance matadata
     text_box = AnchoredText(textstr, frameon=True, loc=4, pad=0.5,
                             borderpad=0.05, prop={'size': 5})
     plt.setp(text_box.patch, facecolor='white', alpha=1, linewidth=0.35)
     ax.add_artist(text_box)
 
-    # ajout du logo
-    str1 = '                Environnement et Changement climatique Canada'
-    str2 = '                Environment and Climate Change Canada'
-    textstr2 = '\n'.join((str1, str2))
-    text_box2 = AnchoredText(textstr2, frameon=True, loc=2, pad=0.5,
-                             borderpad=0, prop={'size': 4})
-    plt.setp(text_box2.patch, facecolor='white', alpha=1, linewidth=0.35,
-             zorder=1)
-    ax.add_artist(text_box2)
-
-    im = image.imread('msc_pygeoapi/process/weather/canada flag.png')
-    imagebox = OffsetImage(im, zoom=0.07)
-    ab = AnnotationBbox(imagebox, (0.005, 0.99), xycoords=ax.transAxes,
-                        frameon=False, box_alignment=(0, 1))
+    # adding the logo
+    im = image.imread('msc_pygeoapi/process/weather/logo.png')
+    imagebox = OffsetImage(im, zoom=0.15)
+    ab = AnnotationBbox(imagebox, (0.003, 0.995), xycoords=ax.transAxes,
+                        frameon=True, box_alignment=(0, 1), pad=0.1)
+    plt.setp(ab.patch, linewidth=0.35)
     ab.set_zorder(10)
     ax.add_artist(ab)
 
-    # ajout de la légende
+    # adding the legend
     str1 = 'Be aware / Soyez Attentif'
     str2 = 'Be prepared / Soyez très vigilant'
     str3 = 'Be extra cautious / Vigilance absolue'
@@ -604,10 +591,10 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
                 path, bands = get_bands(files)
 
                 if sufix == 'ERGE':
-                    bands = band_ordre_G(bands)
+                    bands.sort()
 
                 if sufix == 'ERLE':
-                    bands = band_ordre_L(bands)
+                    bands.sort(reverse=True)
 
                 vigi_data = get_new_array(path, bands, bbox)
                 textstr = get_data_text(variables[0], tresholds, mr, model,
