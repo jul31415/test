@@ -320,58 +320,6 @@ def get_bands(files):
     return paths, bands
 
 
-def band_ordre_G(bands):
-    """
-    sort thresholds bands in ascending order  for ERGE
-
-    param bands : bands to sort
-
-    return : bands : sorted band arrays
-    """
-
-    if bands[0] > bands[1]:
-        temp = bands[0]
-        bands[0] = bands[1]
-        bands[1] = temp
-
-    if bands[1] > bands[2]:
-        temp = bands[1]
-        bands[1] = bands[2]
-        bands[2] = temp
-
-    if bands[0] > bands[1]:
-        temp = bands[0]
-        bands[0] = bands[1]
-        bands[1] = temp
-    return bands
-
-
-def band_ordre_L(bands):
-    """
-    sort thresholds bands in descending order  for ERGE
-
-    param bands : bands to sort
-
-    return : bands : sorted band array
-    """
-
-    if bands[0] < bands[1]:
-        temp = bands[0]
-        bands[0] = bands[1]
-        bands[1] = temp
-
-    if bands[1] < bands[2]:
-        temp = bands[1]
-        bands[1] = bands[2]
-        bands[2] = temp
-
-    if bands[0] < bands[1]:
-        temp = bands[0]
-        bands[0] = bands[1]
-        bands[1] = temp
-    return bands
-
-
 def read_croped_array(band, geotransform, bbox):
     """
     create a array within the bbox from the grib band
