@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 import json
 import logging
 import matplotlib.pyplot as plt
-import io
+from io import BytesIO
 
 
 from elasticsearch import Elasticsearch, exceptions
@@ -166,9 +166,9 @@ PROCESS_METADATA = {
         'title': 'output rdpa graph',
         'output': {
             'formats': [{
-                'mineType': 'image/png'
+                'mimeType': 'image/png'
             }, {
-                'mineType': 'application/json'
+                'mimeType': 'application/json'
             }]
         }
     }],
@@ -494,7 +494,7 @@ def png(data, coord_x, coord_y, time_step):
     coord_y : y coordinate
     time_step : time step for graph
 
-    return : output : graph in PNG in bytes
+    return : output : PNG graph in bytes
     """
 
     size = len(data['dates'])
@@ -558,9 +558,8 @@ def png(data, coord_x, coord_y, time_step):
     ax.margins(x=0)
     plt.subplots_adjust(bottom=0.2)
 
-    b = io.BytesIO()
-    plt.savefig('rdpa-graph.png', bbox_inches='tight')
-    plt.savefig(b, bbox_inches='tight')
+    b = BytesIO()
+    plt.savefig(b, bbox_inches='tight', format='png')
     return b
 
 
@@ -603,7 +602,7 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step, format_):
                     values = get_values(res, _x, _y, cumul)
                     data = get_graph_arrays(values, time_step)
 
-                    if format_ == 'GeoJSON':
+                    if format_.lower() == 'geojson':
                         output = geo_json(data, x, y)
                     else:
                         output = png(data, x, y, time_step)
@@ -640,7 +639,7 @@ def rdpa_graph_execute():
 def cli(ctx, layer, date_end, date_begin, x, y, time_step, format_):
     output = get_rpda_info(layer, date_end, date_begin, x, y, time_step,
                            format_)
-    if format_ == 'PNG':
+    if format_.lower() == 'png':
         click.echo(output.getvalue())
     else:
         click.echo(json.dumps(output, ensure_ascii=False))
@@ -673,7 +672,7 @@ try:
             time_step = data['time_step']
             format_ = data['format']
 
-            if format_ != 'GeoJSON' and format_ != 'PNG':
+            if format_.lower() != 'geojson' and format_.lower() != 'png':
                 msg = 'Invalid format'
                 LOGGER.error(msg)
                 raise ValueError(msg)
@@ -681,16 +680,17 @@ try:
             try:
                 output = get_rpda_info(layer, date_end, date_begin, x, y,
                                        time_step, format_)
+
             except ValueError as error:
                 msg = 'Process execution error: {}'.format(error)
                 LOGGER.error(msg)
                 raise ProcessorExecuteError(msg)
 
-            if format_ == 'PNG':
+            if format_.lower() == 'png':
                 if output is not None:
                     return output.getvalue()
                 else:
-                    return output
+                    return BytesIO().getvalue()
             else:
                 return output
 
