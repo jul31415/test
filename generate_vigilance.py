@@ -27,7 +27,6 @@
 # OTHER DEALINGS IN THE SOFTWARE.
 #
 # =================================================================
-
 import click
 from datetime import datetime
 from io import BytesIO
@@ -43,7 +42,7 @@ from matplotlib.offsetbox import AnchoredText, OffsetImage, AnnotationBbox
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
-from osgeo import gdal
+from osgeo import gdal, osr
 
 LOGGER = logging.getLogger(__name__)
 
@@ -125,6 +124,7 @@ PROCESS_METADATA = {
     }, {
         'id': 'format',
         'title': 'output format',
+        'description': 'PNG or GeoTiff',
         'input': {
             'literalDataDomain': {
                 'dataType': 'string',
@@ -141,7 +141,11 @@ PROCESS_METADATA = {
         'title': 'output wms vigilance product',
         'output': {
             'formats': [{
-                'mimeType': 'image/png'
+                'mimeType': 'image/tiff'
+            }, {
+                'mimeType': 'image/png',
+            }, {
+                'mimeType': 'application/json',
             }]
         }
     }],
@@ -506,6 +510,46 @@ def add_basemap(data, bbox, textstr):
     return buffer
 
 
+def get_geotiff(data, bbox, path):
+    """
+    transform the vigilance numpy array into a Geotiff file
+
+    param data : vigilance array
+    param bbox : bounding box
+
+    return : buffer : buffer of the geoTiff
+    """
+
+    driver = gdal.GetDriverByName('GTiff')
+    ds = gdal.Open(path)
+    ysize, xsize = data.shape
+
+    driver.Create('/vsimem/vigi', xsize, ysize, 1, gdal.GDT_Byte)
+    ds_ = gdal.Open('/vsimem/vigi', gdal.GA_Update)
+    srs = osr.SpatialReference()
+    wkt = ds.GetProjection()
+    srs.ImportFromWkt(wkt)
+    ds_.SetProjection(srs.ExportToWkt())
+    gt = ds.GetGeoTransform()
+    gt = (bbox[0], gt[1], gt[2], bbox[3], gt[4], gt[5])
+    ds_.SetGeoTransform(gt)
+
+    outband = ds_.GetRasterBand(1)
+    outband.SetStatistics(np.min(data), np.max(data),
+                          np.average(data), np.std(data))
+    outband.WriteArray(data)
+
+    driver.CreateCopy('/vsimem/vigi', ds_)
+
+    file_buffer = gdal.VSIGetMemFileBuffer_unsafe('/vsimem/vigi')
+    buffer = BytesIO()
+    buffer.write(file_buffer)
+    buffer.seek(0)
+    gdal.Unlink('/vsimem/vigi')
+    ds_ = None
+    return buffer
+
+
 def generate_vigilance(layers, fh, mr, bbox, format_):
     """
     generate a vigilance file (with specified format)
@@ -522,7 +566,6 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
 
     gdal.UseExceptions()
     bbox = convert_bbox(bbox)
-
     if bbox is not None:
 
         if len(layers) == 3:
@@ -531,13 +574,11 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
                 return None
 
             files, variables = get_files(layers, fh, mr)
-
             if files is None:
                 return None
 
             if len(files) == 3:
                 path, bands = get_bands(files)
-
                 if sufix == 'ERGE':
                     bands.sort()
 
@@ -545,12 +586,14 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
                     bands.sort(reverse=True)
 
                 vigi_data = get_new_array(path, bands, bbox)
-                textstr = get_data_text(variables[0], tresholds, mr, model,
-                                        fh)
-                image_buffer = add_basemap(vigi_data, bbox, textstr)
-
-                if format_ == 'png':
-                    return image_buffer
+                if format_.lower() == 'png':
+                    textstr = get_data_text(variables[0], tresholds, mr,
+                                            model, fh)
+                    png_buffer = add_basemap(vigi_data, bbox, textstr)
+                    return png_buffer
+                elif format_.lower() == 'geotiff':
+                    tiff_buffer = get_geotiff(vigi_data, bbox, path)
+                    return tiff_buffer
                 else:
                     LOGGER.error('invalid format')
             else:
@@ -578,7 +621,7 @@ def cli(ctx, layers, fh, mr, bbox, format_):
     output = generate_vigilance(layers.split(','), fh, mr, bbox.split(','),
                                 format_)
     if output is not None:
-        click.echo(json.dumps('vigilance png produced, curl via pygeoapi'))
+        click.echo(json.dumps('vigilance produced, curl via pygeoapi'))
     else:
         return output
 
@@ -611,13 +654,13 @@ try:
             format_ = data['format']
 
             try:
-                image_buffer = generate_vigilance(layers.split(','),
-                                                  fh, mr, bbox.split(','),
-                                                  format_)
-                if image_buffer is not None:
-                    return image_buffer.getvalue()
+                output = generate_vigilance(layers.split(','),
+                                            fh, mr, bbox.split(','),
+                                            format_)
+                if output is not None:
+                    return output.getvalue()
                 else:
-                    return image_buffer
+                    return BytesIO().getvalue()
             except ValueError as err:
                 msg = 'Process execution error: {}'.format(err)
                 LOGGER.error(msg)
