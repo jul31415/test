@@ -58,7 +58,7 @@ COLOR_MAP = [[1, 1, 1, 1],
 PROCESS_METADATA = {
     'version': '0.1.0',
     'id': 'generate-vigilance',
-    'title': 'Generate vigilance process for weather data',
+    'title': 'Generate vigilance',
     'description': 'Generate vigilance process for weather data',
     'keywords': ['generate vigilance weather'],
     'links': [{
@@ -462,8 +462,10 @@ def add_basemap(data, bbox, textstr):
     lats = np.linspace(bbox[3], bbox[1], ny)
     lons, lats = np.meshgrid(lons, lats)
     ax = plt.axes(projection=project)
-    colors = ListedColormap(COLOR_MAP)
-    plt.contourf(lons, lats, data, 60, transform=ccrs.PlateCarree(),
+
+    max_ = int(np.amax(data)) + 1
+    colors = ListedColormap(COLOR_MAP[0:max_])
+    plt.contourf(lons, lats, data, max_, transform=ccrs.PlateCarree(),
                  cmap=colors)
 
     # adding the basemap
@@ -476,7 +478,7 @@ def add_basemap(data, bbox, textstr):
                                          scale='50m', facecolor='none')
     ax.add_feature(state, edgecolor='black', linewidth=0.35)
 
-    # adding vigilance matadata
+    # adding vigilance metadata
     text_box = AnchoredText(textstr, frameon=True, loc=4, pad=0.5,
                             borderpad=0.05, prop={'size': 5})
     plt.setp(text_box.patch, facecolor='white', alpha=1, linewidth=0.35)
@@ -485,7 +487,7 @@ def add_basemap(data, bbox, textstr):
     # adding the logo
     im = image.imread('msc_pygeoapi/process/weather/logo.png')
     imagebox = OffsetImage(im, zoom=0.15)
-    ab = AnnotationBbox(imagebox, (0.003, 0.995), xycoords=ax.transAxes,
+    ab = AnnotationBbox(imagebox, (0.003, 0.996), xycoords=ax.transAxes,
                         frameon=True, box_alignment=(0, 1), pad=0.1)
     plt.setp(ab.patch, linewidth=0.35)
     ab.set_zorder(10)
