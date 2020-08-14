@@ -486,7 +486,8 @@ def add_basemap(data, bbox, textstr):
 
     # adding the logo
     im = image.imread('msc_pygeoapi/process/weather/logo.png')
-    imagebox = OffsetImage(im, zoom=0.15)
+    imagebox = OffsetImage(im, zoom=0.5, filternorm=True, filterrad=4.0,
+                           resample=False, dpi_cor=False)
     ab = AnnotationBbox(imagebox, (0.003, 0.996), xycoords=ax.transAxes,
                         frameon=True, box_alignment=(0, 1), pad=0.1)
     plt.setp(ab.patch, linewidth=0.35)
