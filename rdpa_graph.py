@@ -43,6 +43,7 @@ LOGGER = logging.getLogger(__name__)
 # ne pas oublier logger level est a debug:
 
 DATE_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
+ES_INDEX = 'geomet-data-registry-tileindex'
 
 PROCESS_METADATA = {
     'version': '0.1.0',
@@ -588,9 +589,9 @@ def get_rpda_info(layer, date_end, date_begin, x, y, time_step, format_):
         LOGGER.error(msg)
         return None
 
+    # TODO: use env variable for ES connection
     es = Elasticsearch(['localhost:9200'])
-    index = 'geomet-data-registry-tileindex'
-    res, nb_res = query_es(es, index, date_end, date_begin, layer)
+    res, nb_res = query_es(es, ES_INDEX, date_end, date_begin, layer)
 
     if res is not None:
         if nb_res > 0:
@@ -640,7 +641,10 @@ def cli(ctx, layer, date_end, date_begin, x, y, time_step, format_):
     output = get_rpda_info(layer, date_end, date_begin, x, y, time_step,
                            format_)
     if format_.lower() == 'png':
-        click.echo(output.getvalue())
+        if output is not None:
+            click.echo(output.getvalue())
+        else:
+            return None
     else:
         click.echo(json.dumps(output, ensure_ascii=False))
 

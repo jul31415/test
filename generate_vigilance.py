@@ -124,7 +124,7 @@ PROCESS_METADATA = {
     }, {
         'id': 'format',
         'title': 'output format',
-        'description': 'PNG or GeoTiff',
+        'description': 'PNG, GeoTiff or GeoPNG',
         'input': {
             'literalDataDomain': {
                 'dataType': 'string',
@@ -520,7 +520,7 @@ def get_geotiff(data, bbox, path):
     param data : vigilance array
     param bbox : bounding box
 
-    return : buffer : buffer of the geoTiff
+    return : buffer : buffer of the geoTiff bytes
     """
 
     driver = gdal.GetDriverByName('GTiff')
@@ -553,6 +553,19 @@ def get_geotiff(data, bbox, path):
     return buffer
 
 
+def get_geopng(data, bbox):
+    """
+    transform the vigilance numpy array into  GeoPNG 
+
+    param data : vigilance array
+    param bbox : bounding box
+
+    return : buffer : buffer of the geoPng bytes
+
+    """
+    return None
+
+
 def generate_vigilance(layers, fh, mr, bbox, format_):
     """
     generate a vigilance file (with specified format)
@@ -564,7 +577,7 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
     param bbox : bounding box
     param format_ : output format
 
-    return : image_buffer : buffer of the png
+    return : image_buffer : buffer of the file in bytes
     """
 
     gdal.UseExceptions()
@@ -589,14 +602,17 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
                     bands.sort(reverse=True)
 
                 vigi_data = get_new_array(path, bands, bbox)
-                if format_.lower() == 'png':
+                if format_ == 'png':
                     textstr = get_data_text(variables[0], tresholds, mr,
                                             model, fh)
                     png_buffer = add_basemap(vigi_data, bbox, textstr)
                     return png_buffer
-                elif format_.lower() == 'geotiff':
+                elif format_ == 'geotiff':
                     tiff_buffer = get_geotiff(vigi_data, bbox, path)
                     return tiff_buffer
+                elif format_ == 'geopng':
+                    geopng_buffer = get_geopng(vigi_data, bbox)
+                    return geopng_buffer
                 else:
                     LOGGER.error('invalid format')
             else:
@@ -622,7 +638,7 @@ def generate_vigilance(layers, fh, mr, bbox, format_):
 def cli(ctx, layers, fh, mr, bbox, format_):
 
     output = generate_vigilance(layers.split(','), fh, mr, bbox.split(','),
-                                format_)
+                                format_.lower())
     if output is not None:
         click.echo(json.dumps('vigilance produced, curl via pygeoapi'))
     else:
@@ -654,7 +670,7 @@ try:
             mr = datetime.strptime(data['model-run'],
                                    DATE_FORMAT)
             bbox = data['bbox']
-            format_ = data['format']
+            format_ = data['format'].lower()
 
             try:
                 output = generate_vigilance(layers.split(','),
