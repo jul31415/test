@@ -565,7 +565,7 @@ def get_geopng(data, bbox):
 
     """
     x_pixel_dist = str((bbox[2] - bbox[0])/data.shape[1])
-    y_pixel_dist = str((bbox[3] - bbox[1])/data.shape[0])
+    y_pixel_dist = str(-1 * (bbox[3] - bbox[1])/data.shape[0])
     x_top_left = str(bbox[0])
     y_top_left = str(bbox[3])
 
