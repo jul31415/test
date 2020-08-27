@@ -43,6 +43,7 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 from osgeo import gdal, osr
+from PIL import Image
 
 LOGGER = logging.getLogger(__name__)
 
@@ -555,7 +556,7 @@ def get_geotiff(data, bbox, path):
 
 def get_geopng(data, bbox):
     """
-    transform the vigilance numpy array into  GeoPNG 
+    transform the vigilance numpy array into Ge oPNG
 
     param data : vigilance array
     param bbox : bounding box
@@ -563,7 +564,29 @@ def get_geopng(data, bbox):
     return : buffer : buffer of the geoPng bytes
 
     """
-    return None
+    x_pixel_dist = str((bbox[2] - bbox[0])/data.shape[1])
+    y_pixel_dist = str((bbox[3] - bbox[1])/data.shape[0])
+    x_top_left = str(bbox[0])
+    y_top_left = str(bbox[3])
+
+    f = open("vigi.pwg", "w")
+    f.write(x_pixel_dist + "\n0\n0\n" +
+            y_pixel_dist + "\n" +
+            x_top_left + "\n" +
+            y_top_left)
+    f.close()
+
+    color = np.zeros((data.shape[0], data.shape[1], 3))
+
+    color[data == 0] = [255, 255, 255]
+    color[data == 1] = [246, 255, 0]
+    color[data == 2] = [255, 160, 0]
+    color[data == 3] = [255, 0, 0]
+
+    im = Image.fromarray(np.uint8(color), 'RGB')
+    b = BytesIO()
+    im.save(b, format='PNG')
+    return b
 
 
 def generate_vigilance(layers, fh, mr, bbox, format_):
