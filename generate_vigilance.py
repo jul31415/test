@@ -564,20 +564,28 @@ def get_geopng(data, bbox):
     return : buffer : buffer of the geoPng bytes
 
     """
-    x_pixel_dist = str((bbox[2] - bbox[0])/data.shape[1])
-    y_pixel_dist = str(-1 * (bbox[3] - bbox[1])/data.shape[0])
-    x_top_left = str(bbox[0])
-    y_top_left = str(bbox[3])
+    x_pixel_dist = (bbox[2] - bbox[0])/data.shape[1]
+    y_pixel_dist = -1 * (bbox[3] - bbox[1])/data.shape[0]
+    x_top_left = bbox[0]
+    y_top_left = bbox[3]
 
-    f = open("vigi.pwg", "w")
-    f.write(x_pixel_dist + "\n0\n0\n" +
-            y_pixel_dist + "\n" +
-            x_top_left + "\n" +
-            y_top_left)
+    pgw = []
+    pgw.append(x_pixel_dist)
+    pgw.append(0)
+    pgw.append(0)
+    pgw.append(y_pixel_dist)
+    pgw.append(x_top_left)
+    pgw.append(y_top_left)
+
+    # for generating the .pgw
+    '''
+    f = open("vigi.pgw", "w")
+    for line in pgw:
+        f.write(str(line) + '\n')
     f.close()
+    '''
 
     color = np.zeros((data.shape[0], data.shape[1], 3))
-
     color[data == 0] = [255, 255, 255]
     color[data == 1] = [246, 255, 0]
     color[data == 2] = [255, 160, 0]
@@ -586,7 +594,12 @@ def get_geopng(data, bbox):
     im = Image.fromarray(np.uint8(color), 'RGB')
     b = BytesIO()
     im.save(b, format='PNG')
-    return b
+
+    output = {
+        'pgw': pgw,
+        'png': b.getvalue()
+    }
+    return output
 
 
 def generate_vigilance(layers, fh, mr, bbox, format_):
@@ -700,7 +713,10 @@ try:
                                             fh, mr, bbox.split(','),
                                             format_)
                 if output is not None:
-                    return output.getvalue()
+                    if format_ == "geopng":
+                        return output
+                    else:
+                        return output.getvalue()
                 else:
                     return BytesIO().getvalue()
             except ValueError as err:
